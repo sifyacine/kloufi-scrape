@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+*.eggs/
+pip-wheel-metadata/
+*.dist-info/
+
+# Virtual environments
+.venv/
+env/
+venv/
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+
+# Pyenv
+.python-version
+
+# mypy
+.mypy_cache/
+
+# Editor directories and files
+.vscode/
+.idea/
+*.sublime-workspace
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# dotenv
+.env
+.env.*
+
+# Playwright artifacts
+playwright-report/
+
+# Build / distribution
+build/
+dist/
+
+# local database files
+*.sqlite3
+
+# Notes:
+# - Remove or adjust any ignore rules if you explicitly want files (e.g., data/*.json) to be tracked.

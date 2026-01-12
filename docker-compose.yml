@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  scraper:
+    build:
+      context: .
+      args:
+        INSTALL_PLAYWRIGHT: "false" # set to "true" if you need Playwright browsers
+    image: kloufi-scrape:latest
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    restart: unless-stopped
+    command: python scraper/main.py
