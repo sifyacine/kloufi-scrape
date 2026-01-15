@@ -12,6 +12,8 @@ pip-wheel-metadata/
 .venv/
 env/
 venv/
+junk_test/
+data/
 
 # Installer logs
 pip-log.txt
