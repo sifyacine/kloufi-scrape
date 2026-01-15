@@ -10,6 +10,10 @@ from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode, BrowserConfig
 # Add project root to path to find 'scraper' and 'global'
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 
+from scraper.crawler.crawler_runner import crawl
+from scraper.browser.fingerprint import build_context
+from utils.immobilier import ImmobilierUtils
+
 try:
     sys.path.insert(1, '../../global')
     from insert_scrape import insert_data_to_es
@@ -17,170 +21,6 @@ except ImportError:
     def insert_data_to_es(data, index):
         print(f"[Mock] there is a problem in saving data'{index}'")
 
-# Add project root to path to find 'scraper'
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
-from scraper.crawler.crawler_runner import crawl
-from scraper.browser.fingerprint import build_context
-
-
-
-# ------------------- [NEW] JSON saver helper -------------------
-def save_to_json(data: dict, filename: str = "scraped_ouedkniss.jsonl"):
-    """Append one scraped item as a JSON line to the file (creates file if missing)."""
-    with open(filename, "a", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
-        f.write("\n")          # JSON Lines format – one object per line
-# ---------------------------------------------------------------
-
-
-def save_listing_file(data: dict, folder: str = None):
-    """Save a single listing as a pretty JSON file in the same directory as this script
-
-    Filename format: YYYYmmdd_HHMMSS_<id-or-slug>.json
-    """
-    try:
-        base_dir = folder or os.path.dirname(__file__)
-    except NameError:
-        base_dir = os.getcwd()
-
-    os.makedirs(base_dir, exist_ok=True)
-
-    # Try to pick a stable identifier: 'numero', id in profile link, or fallback to title
-    identifier = "item"
-    if isinstance(data.get("numero"), str) and data.get("numero"):
-        identifier = re.sub(r"[^0-9A-Za-z_-]", "", data["numero"])[:64]
-    else:
-        # try extract id from profile link or url
-        prof = data.get("contact", {}).get("profile_link")
-        if prof:
-            m = re.search(r"/membre/(\d+)", prof)
-            if m:
-                identifier = m.group(1)
-        if identifier == "item":
-            # extract last path segment from url
-            try:
-                last = os.path.basename(data.get("url", "").rstrip("/"))
-                if last:
-                    identifier = re.sub(r"[^0-9A-Za-z_-]", "", last)[:64]
-            except Exception:
-                pass
-    if identifier == "item":
-        # fallback to slugified title
-        title = data.get("titre") or "listing"
-        identifier = re.sub(r"[^0-9A-Za-z_-]", "", title.replace(" ", "-") )[:64]
-
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{timestamp}_{identifier}.json"
-    path = os.path.join(base_dir, filename)
-    try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        print(f"Saved listing to {path}")
-    except Exception as e:
-        print(f"Failed to save listing file: {e}")
-
-
-def parse_float_or_none(text):
-    try:
-        return float(text.strip())
-    except (ValueError, AttributeError):
-        return ""
-
-
-def traitement_prix(prix_dec, prix_unit):
-    conversion = {"Millions": 10000, "Milliards": 10000000}
-    return float(prix_dec) * conversion.get(prix_unit, 1) if prix_dec and prix_unit else 0
-
-
-def extract_text_or_default(soup, selector, default=""):
-    element = soup.select_one(selector)
-    return element.get_text(strip=True) if element else default
-
-
-def parse_date(date_str):
-    try:
-        return datetime.strptime(date_str, '%d/%m/%Y %H:%M:%S').isoformat()
-    except ValueError:
-        return ""
-
-
-def is_essential_data_empty(data):
-    return not data.get("titre")
-
-
-def normalize_url(url):
-    return os.path.splitext(url)[0]
-
-
-def convert_property_type(raw_key):
-    valid_types = {
-        "Appartement", "Villa", "Local", "Terrain", "Studio", "Hangar",
-        "Niveau de villa", "Immeuble", "Duplex", "Carcasse", "Autre",
-        "Bungalow", "Terrain agricole", "Usine", "Chalet", "Commerce",
-        "Locaux", "Bureau", "Autres", "Salle", "Hostel", "Dortoir",
-        "Ferme", "Hotel", "Triplex", "Maison", "Pavillon", "Auberge", "Résidence"
-    }
-
-    normalization_map = {
-        "bungalow": "Bungalow",
-        "bungalows": "Bungalow",
-        "niveau": "Niveau de villa",
-        "niveau de villa": "Niveau de villa",
-        "terrain-agricole": "Terrain agricole",
-        "terrain agricole": "Terrain agricole",
-        "appartements": "Appartement",
-        "immeubles": "Immeuble",
-        "commerce, local": "Commerce",
-        "bureaux": "Bureau",
-        "ferme, terrain": "Ferme",
-        "residence": "Résidence",
-        "résidence": "Résidence"
-    }
-
-    if not raw_key or not isinstance(raw_key, str):
-        return ""
-
-    cleaned = raw_key.strip().lower()
-
-    normalized = normalization_map.get(cleaned, cleaned).capitalize()
-    if normalized in valid_types:
-        return normalized
-
-    lowered = raw_key.lower()
-    for key, value in normalization_map.items():
-        if key in lowered:
-            normalized_candidate = value
-            if normalized_candidate in valid_types:
-                return normalized_candidate
-
-    for valid in valid_types:
-        if valid.lower() in lowered:
-            return valid
-
-    return ""
-
-def detect_transaction_from_title(title: str) -> str:
-    """
-    Detects the transaction type from the ad title, with priority order.
-    Returns one of: Vente, Location, Location-vacances, Cherche-location, Cherche-achat
-    """
-    if not title:
-        return ""
-
-    t = title.lower()
-
-    if "location vacances" in t or "location vacance" in t:
-        return "Location-vacances"
-    if "cherche location" in t or "recherche location" in t or "je cherche à louer" in t:
-        return "Cherche-location"
-    if "cherche achat" in t or "recherche achat" in t or "cherche à acheter" in t:
-        return "Cherche-achat"
-    if "location" in t or "louer" in t or "à louer" in t:
-        return "Location"
-    if "vente" in t or "vendre" in t or "à vendre" in t:
-        return "Vente"
-
-    return ""  # Unknown / fallback
 
 async def scrape_single_url(target_url, proxy_manager=None, max_retries=3, retry_delay=5):
     # JS for scrolling to load dynamic content (User Info)
@@ -272,7 +112,7 @@ async def scrape_single_url(target_url, proxy_manager=None, max_retries=3, retry
                     proxy_manager.report_success(proxy)
                 soup = BeautifulSoup(result.html, "html.parser")
 
-                title = extract_text_or_default(
+                title = ImmobilierUtils.extract_text_or_default(
                     soup, "h1.text-h5.text-capitalize")
                 
                 # Try the correct primary selector first
@@ -281,17 +121,18 @@ async def scrape_single_url(target_url, proxy_manager=None, max_retries=3, retry
                 if desc_elem:
                     description = desc_elem.get_text(separator="\n", strip=True)
                 else:
-                    description = extract_text_or_default(soup, "div.__description.mb-2", "")
+                    description = ImmobilierUtils.extract_text_or_default(soup, "div.__description.mb-2", "")
                 
                 print(f"Description extracted (length: {len(description)}): {description[:100]}...")
 
-                price_value = extract_text_or_default(
+                price_value = ImmobilierUtils.extract_text_or_default(
                     soup, "div.mt-1.line-height-2.text-primary.text-h6 div.mr-1").replace(" ", "")
-                price_unit = extract_text_or_default(
+                price_unit = ImmobilierUtils.extract_text_or_default(
                     soup, "div.mt-1.line-height-2.text-primary.text-h6 div.mr-1 + div")
-                price_dec = traitement_prix(price_value, price_unit)
-                                # === NEW: Detect transaction type from title ===
-                transaction_from_title = detect_transaction_from_title(title)
+                price_dec = ImmobilierUtils.traitement_prix(price_value, price_unit)
+                
+                # === NEW: Detect transaction type from title ===
+                transaction_from_title = ImmobilierUtils.detect_transaction_from_title(title)
 
                 # Get transaction from chips (existing logic)
                 transaction_chips = [chip.get_text(strip=True) for chip in soup.select(
@@ -303,31 +144,31 @@ async def scrape_single_url(target_url, proxy_manager=None, max_retries=3, retry
                 images = set()
                 image_urls = set()
                 for picture in soup.find_all("picture", class_="__slide"):
-                    print("Found picture element")
+                    # print("Found picture element")
 
                     webp_source = picture.find(
                         "source", {"type": "image/webp"})
                     jpg_source = picture.find("source", {"type": "image/jpg"})
 
                     if webp_source and "srcset" in webp_source.attrs:
-                        print("Found WebP source")
-                        normalized_url = normalize_url(webp_source["srcset"])
+                        # print("Found WebP source")
+                        normalized_url = ImmobilierUtils.normalize_url(webp_source["srcset"])
                         if normalized_url not in image_urls:
                             images.add(webp_source["srcset"])
                             image_urls.add(normalized_url)
 
                     elif jpg_source and "srcset" in jpg_source.attrs:
-                        print("Found JPG source")
-                        normalized_url = normalize_url(jpg_source["srcset"])
+                        # print("Found JPG source")
+                        normalized_url = ImmobilierUtils.normalize_url(jpg_source["srcset"])
                         if normalized_url not in image_urls:
                             images.add(jpg_source["srcset"])
                             image_urls.add(normalized_url)
 
                     else:
-                        print("No source found, checking img tag")
+                        # print("No source found, checking img tag")
                         img = picture.find("img")
                         if img and "src" in img.attrs:
-                            normalized_url = normalize_url(img["src"])
+                            normalized_url = ImmobilierUtils.normalize_url(img["src"])
                             if normalized_url not in image_urls:
                                 images.add(img["src"])
                                 image_urls.add(normalized_url)
@@ -393,9 +234,9 @@ async def scrape_single_url(target_url, proxy_manager=None, max_retries=3, retry
 
                 print(f"Extracted → Wilaya: '{wilaya}' | Commune: '{commune}' | Adresse: '{address}'")
                 contact_container = soup.find(id="announcementUserInfo")
-                print('Contact container:', contact_container)
+                # print('Contact container:', contact_container)
                 if contact_container:
-                    print('Contact container found')
+                    # print('Contact container found')
 
                     # CHANGE: Moved the city extraction logic inside the if contact_container block and added fallbacks.
                     # This consolidates location extraction and uses more robust checks to ensure wilaya/commune are pulled
@@ -403,7 +244,7 @@ async def scrape_single_url(target_url, proxy_manager=None, max_retries=3, retry
                     first_item = contact_container.select_one(".v-list-item")
 
                     if first_item:
-                        print("First item found")
+                        # print("First item found")
 
                         city_div = first_item.select_one(
                             ".py-2.text-wrap.text-capitalize")
@@ -416,18 +257,18 @@ async def scrape_single_url(target_url, proxy_manager=None, max_retries=3, retry
                                 wilaya, commune = parts
                             else:
                                 wilaya, commune = city_text, ""
-                        else:
-                            print("City information not found in the first item.")
+                        # else:
+                        #    print("City information not found in the first item.")
 
-                    else:
-                        print("No v-list-item found.")
+                    # else:
+                    #    print("No v-list-item found.")
 
                     address_element = contact_container.find(
                         "div", class_="v-list-item__content")
                     if address_element:
                         address = address_element.get_text(strip=True)
-                    else:
-                        print('Address not found')
+                    # else:
+                    #    print('Address not found')
 
 
                 # ==================== CONTACT EXTRACTION START ====================
@@ -558,21 +399,21 @@ async def scrape_single_url(target_url, proxy_manager=None, max_retries=3, retry
                     "prix_value": price_value or "",
                     "prix_dec": price_dec if price_value else "",
                     "description": description,
-                    "bien": convert_property_type(extract_text_or_default(soup, "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Type') + div")),
-                    "numero": extract_text_or_default(soup, "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Numéro') + div"),
-                    "date_depot": parse_date(extract_text_or_default(soup, "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Date') + div")),
-                    "nombre_vues": extract_text_or_default(soup, "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Vues') + div"),
-                    "nb_pieces": parse_float_or_none(
-                        extract_text_or_default(
+                    "bien": ImmobilierUtils.convert_property_type(ImmobilierUtils.extract_text_or_default(soup, "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Type') + div")),
+                    "numero": ImmobilierUtils.extract_text_or_default(soup, "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Numéro') + div"),
+                    "date_depot": ImmobilierUtils.parse_date(ImmobilierUtils.extract_text_or_default(soup, "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Date') + div")),
+                    "nombre_vues": ImmobilierUtils.extract_text_or_default(soup, "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Vues') + div"),
+                    "nb_pieces": ImmobilierUtils.parse_float_or_none(
+                        ImmobilierUtils.extract_text_or_default(
                             soup, "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Pièces') + div")
                     ),
-                    "superficie": extract_text_or_default(soup, "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Superficie') + div span").split(" ")[0] if extract_text_or_default(soup, "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Superficie') + div span") != "" else "",
-                    "superficie_unit": extract_text_or_default(soup, "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Superficie') + div span").split(" ")[-1] if extract_text_or_default(soup, "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Superficie') + div span") != "" else "",
+                    "superficie": ImmobilierUtils.extract_text_or_default(soup, "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Superficie') + div span").split(" ")[0] if ImmobilierUtils.extract_text_or_default(soup, "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Superficie') + div span") != "" else "",
+                    "superficie_unit": ImmobilierUtils.extract_text_or_default(soup, "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Superficie') + div span").split(" ")[-1] if ImmobilierUtils.extract_text_or_default(soup, "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Superficie') + div span") != "" else "",
                     "papiers": [chip.get_text(strip=True) for chip in soup.select("div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Papiers') + div .v-chip__content")],
                     "specifications": [chip.get_text(strip=True) for chip in soup.select("div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Spécifications') + div .v-chip__content")],
                     "images": images,
-                    "etage": extract_text_or_default(soup, "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Etage(s)') + div"),
-                    "transaction": transaction_from_title,  # This is now smartly detected                    
+                    "etage": ImmobilierUtils.extract_text_or_default(soup, "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Etage(s)') + div"),
+                    "transaction": transaction_from_title,                 
                     "payment": [chip.get_text(strip=True) for chip in soup.select("div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Conditions de paiement') + div .v-chip__content")],
                     "adresse": address or "",
                     "wilaya": wilaya.strip() if wilaya else "",
@@ -584,21 +425,21 @@ async def scrape_single_url(target_url, proxy_manager=None, max_retries=3, retry
                     "as_prix": "Avec prix" if price_value else "Sans prix"
                 }
 
-                if not is_essential_data_empty(property_data):
+                if not ImmobilierUtils.is_essential_data_empty(property_data):
                     print(json.dumps(property_data, indent=2, ensure_ascii=False))
 
                     # Save each listing as a separate JSON file for manual inspection
                     try:
-                        save_listing_file(property_data)
+                        ImmobilierUtils.save_listing_file(property_data)
                     except Exception as e:
                         print(f"[SAVE] Failed to write listing file: {e}")
 
                     # Optionally append to JSONL
-                    # save_to_json(property_data)
+                    # ImmobilierUtils.save_to_json(property_data)
 
                     # Send to Elasticsearch immediately
                     try:
-                        insert_data_to_es(property_data, index_name="immobilier")
+                        insert_data_to_es(property_data, index="immobilier")
                         print(f"[ES] Inserted: {property_data['titre'][:50]}...")
                     except Exception as e:
                         print(f"[ES] Failed to insert: {e}")

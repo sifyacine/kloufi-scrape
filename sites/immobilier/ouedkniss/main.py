@@ -5,10 +5,11 @@ import re
 import sys
 import os
 # Add project root to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
-from scrape_details import scrape_single_url, save_to_json
+from scrape_details import scrape_single_url
+from utils.immobilier import ImmobilierUtils
 from datetime import datetime
 
 from scraper.proxy.proxy_sources import fetch_proxies
@@ -22,16 +23,41 @@ from scraper.utils.logger import get_logger
 
 log = get_logger("main_scraper")
 
+import argparse
+
 # ========================= CONFIG =========================
-TRANSACTION = os.getenv("TRANSACTION", "")  # e.g. "vente", "location", "location-vacances", "echange"
-BIEN = os.getenv("BIEN", "")                # e.g. "appartement", "villa", "terrain", "studio"
+parser = argparse.ArgumentParser(description="Ouedkniss Immobilier Scraper")
+parser.add_argument("--transaction", type=str, default=os.getenv("TRANSACTION", ""), help="Transaction type (e.g. vente, location)")
+parser.add_argument("--bien", type=str, default=os.getenv("BIEN", ""), help="Property type (e.g. appartement, villa)")
+args = parser.parse_args()
+
+# Normalization mapping for common slugs
+SLUG_NORMALIZATION = {
+    "location-vacance": "location-vacances",
+    "location-vacances": "location-vacances",
+    "vente": "vente",
+    "location": "location",
+    "echange": "echange",
+    "cherche-achat": "cherche-achat",
+    "cherche-location": "cherche-location",
+    # Bien types
+    "appartement": "appartement",
+    "villa": "villa",
+    "terrain": "terrain",
+    "niveau-de-villa": "niveau-de-villa",
+    "studio": "studio",
+    "local": "local",
+}
+
+def normalize_slug(slug):
+    if not slug: return ""
+    cleaned = slug.strip().lower()
+    return SLUG_NORMALIZATION.get(cleaned, cleaned)
+
+TRANSACTION = normalize_slug(args.transaction)
+BIEN = normalize_slug(args.bien)
 
 # Construct the base URL dynamically
-# If both exist: https://www.ouedkniss.com/immobilier-{transaction}-{bien}/
-# If only transaction: https://www.ouedkniss.com/immobilier-{transaction}/
-# If only bien: https://www.ouedkniss.com/immobilier-{bien}/
-# Default: https://www.ouedkniss.com/immobilier/
-
 base_slug = "immobilier"
 if TRANSACTION:
     base_slug += f"-{TRANSACTION}"
@@ -107,10 +133,6 @@ async def listing_producer(proxy_manager):
         
         page += BATCH_SIZE
         
-        # LIMIT FOR TESTING: Stop after the first batch (Page 1)
-        print("Test mode: Stopping after batch 1")
-        break 
-        
         await asyncio.sleep(DELAY_BETWEEN_BATCHES)
 
     # Signal workers we're done
@@ -175,23 +197,24 @@ async def scrape_listing_page(page_number: int, semaphore, proxy_manager):
                 await new Promise(r => setTimeout(r, 1000));
                 
                 // 6. Stepped Scroll to trigger all lazy loads
-                for (let i = 0; i < 15; i++) {
-                    window.scrollBy(0, 800);
-                    await new Promise(r => setTimeout(r, 500));
+                for (let i = 0; i < 25; i++) {
+                    window.scrollBy(0, 1000);
+                    await new Promise(r => setTimeout(r, 400));
                 }
                 window.scrollTo(0, document.body.scrollHeight);
+                await new Promise(r => setTimeout(r, 2000));
             })();
             """,
-            "await new Promise(r => setTimeout(r, 3000));"
+            "await new Promise(r => setTimeout(r, 5000));"
         ]
         
 
         config = CrawlerRunConfig(
             cache_mode=CacheMode.BYPASS,
             page_timeout=60000,
-            wait_until="domcontentloaded",
+            wait_until="domcontentloaded", # networkidle times out too often on heavy pages
             js_code=js_commands,
-            delay_before_return_html=5
+            delay_before_return_html=10 # Keep delay for lazy content to load
         )
 
         attempt = 0
@@ -233,17 +256,52 @@ async def scrape_listing_page(page_number: int, semaphore, proxy_manager):
 
                 # ALWAYS try HTML extraction to supplement JSON-LD
                 soup = BeautifulSoup(result.html, "html.parser")
-                links = soup.select("a.o-announ-card-content") 
-                if not links:
-                        links = soup.select("div.o-announ-card-column > a")
+                
+                # Check for "No results" markers to avoid infinite retries on invalid pages
+                no_results_markers = [
+                    "aucune annonce trouvée", 
+                    "aucun résultat ne correspond",
+                    "أية نتيجة", 
+                    "no results found"
+                ]
+                page_text = soup.get_text().lower()
+                if any(marker in page_text for marker in no_results_markers):
+                    log.info(f"Page {page_number} -> No ads found on site (Zero results). Stopping producer.")
+                    return [] # Return empty list, producer will see this and stop
+
+                # Comprehensive list of selectors for Ouedkniss listing links
+                selectors = [
+                    "a.o-announ-card-content", 
+                    "div.o-announ-card-column > a",
+                    "a.v-card",
+                    "div.announcement-card a",
+                    ".o-announ-card a"
+                ]
+                
+                links = []
+                for sel in selectors:
+                    found = soup.select(sel)
+                    if found:
+                        links.extend(found)
+                        log.debug(f"  -> Found {len(found)} links with selector '{sel}'")
                 
                 html_count = 0
                 for link in links:
                     href = link.get("href")
                     if href:
+                        # Skip social or auth links
+                        if any(x in href for x in ["/membre/", "/login", "/register", "facebook.com", "google.com"]):
+                            continue
+                        
                         if href.startswith("/"):
+                            # Filter for actual ad links (usually follow a pattern)
+                            if not re.search(r'/[^/]+-d\d+$', href): # Ouedkniss ads usually end with -dID
+                                # However, sometimes they don't or they are category links. 
+                                # Let's be a bit more inclusive but avoid categories.
+                                if "/immobilier-" in href: continue 
+                            
                             full_url = f"https://www.ouedkniss.com{href}"
-                        elif href.startswith("http"):
+                        elif href.startswith("https://www.ouedkniss.com"):
                             full_url = href
                         else:
                             continue
@@ -254,7 +312,7 @@ async def scrape_listing_page(page_number: int, semaphore, proxy_manager):
                             html_count += 1
                 
                 if html_count > 0:
-                    log.info(f"  -> Extracted {html_count} ADDITIONAL URLs via HTML Parsing")
+                    log.info(f"  -> Extracted {html_count} UNIQUE URLs via HTML Parsing")
 
                 if urls:
                     log.info(f"  -> Extracted {len(urls)} URLs via HTML Parsing (merged)")
