@@ -1,16 +1,115 @@
 version: '3.8'
 
+# Shared configuration for all scraper services
+x-base-scraper: &base-scraper
+  build:
+    context: .
+    dockerfile: Dockerfile
+    args:
+      INSTALL_TYPE: ${INSTALL_TYPE:-default}
+  env_file:
+    - .env  # Create from .env.example for any secrets/configs
+  environment:
+    # Scraping control
+    - CATEGORY=${CATEGORY:-all}
+    - SITE=${SITE:-}
+    - MAX_WORKERS=${MAX_WORKERS:-20}
+    - MAX_CONCURRENT_LISTING=${MAX_CONCURRENT_LISTING:-1}
+    - MAX_CONCURRENT_DETAILS=${MAX_CONCURRENT_DETAILS:-20}
+    # Redis configuration
+    - REDIS_HOST=redis
+    - REDIS_PORT=6379
+    # Proxy settings (if using external proxy service)
+    - PROXY_SERVICE_URL=${PROXY_SERVICE_URL:-}
+  volumes:
+    - /dev/shm:/dev/shm  # Chromium performance boost
+    - ./data:/app/data   # Scraped data output
+    - ./logs:/app/logs   # Log files
+    - ./models:/app/models  # Pydantic data models (read-only)
+  deploy:
+    resources:
+      limits:
+        memory: 4G
+      reservations:
+        memory: 1G
+  restart: unless-stopped
+  healthcheck:
+    test: ["CMD-SHELL", "redis-cli -h redis ping && pgrep -f 'python.*dispatcher' || exit 1"]
+    interval: 30s
+    timeout: 10s
+    retries: 3
+    start_period: 60s
+  user: "appuser"
+  depends_on:
+    redis:
+      condition: service_healthy
+
 services:
-  scraper:
-    build:
-      context: .
-      args:
-        INSTALL_PLAYWRIGHT: "false" # set to "true" if you need Playwright browsers
-    image: kloufi-scrape:latest
+  # Redis for proxy scoring persistence
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
     volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-    env_file:
-      - .env
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
-    command: python scraper/main.py
+
+  # Main scraper service
+  scraper:
+    <<: *base-scraper
+    container_name: kloufi-scraper
+    # Override for specific category/site
+    # command: python dispatcher.py --category immobilier --site ouedkniss
+
+  # Optional: Scrape specific category with dedicated service
+  # immobilier:
+  #   <<: *base-scraper
+  #   container_name: kloufi-immobilier
+  #   environment:
+  #     - CATEGORY=immobilier
+  #   profiles:
+  #     - category-specific
+
+  # Optional: Scrape specific category with dedicated service
+  # voiture:
+  #   <<: *base-scraper
+  #   container_name: kloufi-voiture
+  #   environment:
+  #     - CATEGORY=voiture
+  #   profiles:
+  #     - category-specific
+
+volumes:
+  redis-data:
+    driver: local
+
+# Usage examples:
+# 1. Start all (scrapes everything):
+#    docker-compose up -d
+#
+# 2. Scrape only immobilier:
+#    CATEGORY=immobilier docker-compose up -d scraper
+#
+# 3. Scrape specific site:
+#    CATEGORY=immobilier SITE=ouedkniss docker-compose up -d scraper
+#
+# 4. Control concurrency:
+#    MAX_WORKERS=50 MAX_CONCURRENT_DETAILS=30 docker-compose up -d
+#
+# 5. Run category-specific services:
+#    docker-compose --profile category-specific up -d
+#
+# 6. View logs:
+#    docker-compose logs -f scraper
+#
+# 7. Stop everything:
+#    docker-compose down
+#
+# 8. Rebuild after code changes:
+#    docker-compose up --build -d
