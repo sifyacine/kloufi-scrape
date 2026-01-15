@@ -1,0 +1,34 @@
+<div class="slider col-md-3 col-sm-3 col-xs-2-6 col-xs-1-6"><div class="item_okaz_block" id="item_okaz_85699">
+
+<ul class="structure_content_item  produit_items">
+
+
+<li class="item1 produit_titre">
+
+    <a title="Prix et Achat Kia  Picanto  neufs en Algérie" href="http://webstar-auto.com/fr/automobiles/prix-modele-kia-picanto-algerie-85699.htm">
+    <h3>Kia Picanto</h3>
+    </a>
+</li>
+
+
+<li class="item_image produit_logo_small" style="margin-top:0px;">
+<a title="Prix et Achat Kia  Picanto  neufs en Algérie" href="http://webstar-auto.com/fr/automobiles/prix-modele-kia-picanto-algerie-85699.htm">        <img style="max-width:90% !important;" class="item_image_ item_image_responsive " alt="Kia Algérie" src="./web_files/document_service_85699_411_5_2127920388.jpg">
+        </a>
+</li>
+
+<li class="item2_ produit_valeur" style="line-height:23px;float:left;"> 
+
+<h4 class="prix" style="margin-top:5px;"><span style="font-size:13px;">Prix à partir de</span> <span dir="LTR">1 390 000</span> Da</h4> 
+<h4 class="hub_container hub_link">2 Moteurs - 4 Finitions </h4> 
+<a style="" title="Prix et Achat Kia  Picanto  neufs en Algérie" href="http://webstar-auto.com/fr/automobiles/prix-modele-kia-picanto-algerie-85699.htm" class="btn btn-success btn-sm"><i style="padding-right:5px;" class="fa fa-search" aria-hidden="true"></i>Détails Modèle</a> 
+<h4><a title="Kia Algérie : Prix Neuf et Fiches Techniques" href="http://webstar-auto.com/fr/marques/prix-modeles-marque-kia-algerie-60.htm">Kia Algérie</a></h4> 
+</li>
+</ul>
+
+<div id="item_okaz_85699_work" class="item_okaz_work">
+        <div class="item_okaz_work_close" id="item_okaz_work_close_85699"></div>
+
+                <a href="http://webstar-auto.com/fr#" title="Comparer" style="margin-top:50%;" class="btn btn-danger btn-block btn-sm btn-comparer" target="_blank" id="btn_comparer_85699">Comparer</a>
+        </div>
+
+</div></div>

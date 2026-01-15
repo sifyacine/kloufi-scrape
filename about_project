@@ -1,0 +1,230 @@
+Kloufi Scraper - Comprehensive Documentation
+Date: 2026-01-15
+Version: 1.0.0 (Migration Phase)
+
+1. Executive Summary
+What this project is
+Kloufi Scraper is a high-performance, asynchronous web scraping framework designed to aggregate data from major Algerian classifieds websites (Ouedkniss, etc.) across multiple verticals (Real Estate, Automotive, Employment, etc.).
+
+What problem it solves
+It solves the challenge of collecting massive amounts of data from anti-bot protected websites by orchestrating browser automation, intelligent proxy management, and fingerprint randomization at scale.
+
+Who it is for
+Data Engineers needing raw market data.
+Backend Developers maintaining the scraping infrastructure.
+Business Analysts consuming the structured JSON/Elasticsearch data.
+Main Features
+Asynchronous Core: Built on Python asyncio, Playwright, and Crawl4AI for non-blocking I/O.
+Smart Evasion: Integrated browser fingerprinting and "sticky" proxy rotation logic to bypass Cloudflare and WAFs.
+Scalable Architecture: Producer-Consumer pattern allows scaling to hundreds of concurrent workers.
+Modular Design: separating the "Engine" (crawler, proxy) from the "Business Logic" (sites, parsers).
+2. Global Architecture Overview
+overall System
+The system runs as a containerized service.
+
++-------------------------------------------------------------+
+|                     Docker Host                             |
+|                                                             |
+|  +----------------+      +-------------------------------+  |
+|  |  Redis Service |<---->|      Scraper Service (App)    |  |
+|  |  (Proxy Score  |      |                               |  |
+|  |   Persistence) |      |  [Producer] -> [Queue]        |  |
+|  +----------------+      |       |           |           |  |
+|                          |       v           v           |  |
+|                          |   [Worker]    [Worker] ...    |  |
+|                          +-------+-----------+-----------+  |
+|                                  |           |              |
+|                                  v           v              |
+|                           (  Internet / Target Sites  )     |
++-------------------------------------------------------------+
+Technology Stack
+Language: Python 3.12+
+Core Libraries: asyncio, crawl4ai (Playwright wrapper), aiohttp.
+Data Processing: BeautifulSoup4, pydantic.
+Infrastructure: Docker, Docker Compose, Redis.
+Storage: Local JSONL files (primary output), Elasticsearch (ready).
+3. Folder & File Structure
+[!NOTE] The project is currently in a Migration State. The structure below describes the Target architecture defined in 
+folderstructure.md
+. Some legacy code (e.g., immobilier/ root folder) may still exist outside sites/.
+
+Root Directory
+docker-compose.yml
+: Orchestrates the Scraper and Redis services.
+requirements.txt
+: Python dependencies.
+categories_data_structure.py
+: Critical. Defines the schema (fields) for every vertical (immobilier, voiture, etc.).
+normalization_and_utils.py
+: Shared logic for cleaning data (e.g., converting "1.2 M" to 1200000.0).
+scraper/ (The Engine)
+browser/: Handles browser context creation and fingerprinting (User-Agent, Viewport).
+crawler/: Generic async fetching logic (crawl() function).
+proxy/:
+proxy_manager.py: Smart rotation logic (Score-based, Sticky sessions).
+proxy_sources.py: Fetches proxies from providers.
+utils/: Logging and helpers.
+detection/: specialized code for detecting block pages (Cloudflare, etc.).
+sites/ (The Business Logic)
+Organized by Category -> Site.
+
+sites/<category>/<site>/main.py: Entry point for that specific site.
+sites/<category>/<site>/scrape_details.py: Parser logic for detail pages.
+(Currently, immobilier/ exists in the root as a legacy folder containing the active Ouedkniss implementation).
+
+4. Data Architecture
+Data is structured as flat JSON objects. The schema is strictly defined in 
+categories_data_structure.py
+.
+
+Key Schemas
+Real Estate (immobilier)
+titre, description, url: Basic metadata.
+prix, prix_dec (float): Pricing.
+specs: superficie (area), nb_pieces (rooms), etage.
+contact: JSON object with phones, email.
+Automotive (voiture)
+marque, model, annee.
+moteur, energie (Fuel), transmission.
+km (integer Mileage).
+Data Flow
+Extraction: Raw HTML -> BeautifulSoup.
+Normalization: 
+normalization_and_utils.py
+ cleans strings to types.
+Output: Data is appended to scraped_<category>.jsonl files in data/.
+5. Backend Logic
+The system uses a Producer-Consumer model (referenced from 
+immobilier/ouedkniss/main.py
+).
+
+1. The Producer (
+listing_producer
+)
+Iterates over Listing Pages (e.g., Page 1 to N).
+Extracts ad URLs using JSON-LD (reliable) and HTML fallback.
+Pushes clean URLs into an asyncio.Queue.
+2. The Queue
+Functions as a buffer between finding ads and scraping them.
+Managed in memory (Python asyncio.Queue).
+3. The Workers (
+detail_worker
+)
+Consumer tasks that pull URLs from the Queue.
+Call scrape_single_url.
+Use ProxyManager to assign a "Sticky Proxy" (same proxy for same domain until failure).
+Apply randomized browser fingerprints to each request.
+6. Frontend Architecture
+None.
+This project is a backend data pipeline. It does not possess a user interface or frontend web application. Interaction is done via CLI or Docker logs.
+
+7. API Documentation (Internal)
+While there is no REST API exposed to the outside, the internal Python modules act as an API.
+
+scraper.crawler.crawler_runner.crawl
+Input: url (str), proxy (str), context (BrowserContext).
+Output: CrawlResult object (html, success boolean).
+Behavior: Spawns a headless browser, navigates, waits for DOM, executes JS evasion.
+scraper.proxy.proxy_manager.ProxyManager
+Method: get_proxy(domain: str) -> str
+Returns the best available proxy for the domain.
+Method: report_failure(proxy: str)
+Decrements the score of the proxy.
+8. Application Workflow
+User Journey (Developer)
+Configuration:
+
+Edit .env to set MAX_CONCURRENT_WORKERS.
+Edit 
+docker-compose.yml
+ to select the target CATEGORY.
+Execution (docker-compose up):
+
+Container starts.
+main.py
+ initializes Proxy Pool.
+listing_producer
+ starts crawling pages 1..N.
+detail_worker
+ pool (e.g., 20 threads) wakes up.
+Runtime:
+
+Producer finds 50 ads on Page 1 -> Pushes to Queue.
+Workers pop ads, scrape details, save to .jsonl.
+If a Proxy gets blocked (403), it is rotated automatically.
+Completion:
+
+Queue empties.
+Services shut down gracefully.
+Data is ready in ./data/.
+9. Configuration & Deployment
+Environment Variables
+MAX_WORKERS: Global concurrency limit (default: 20).
+CATEGORY: Target vertical (e.g., immobilier).
+SITE: Target site (e.g., ouedkniss).
+REDIS_HOST: Hostname for Redis (default: redis).
+Deployment
+Production:
+docker-compose up -d --build
+Development:
+# Run locally with python
+python -m scraper.main
+10. Error Handling & Logging
+Retry Logic: Implemented at multiple levels.
+Network Level: HTTP timeouts trigger a standard retry.
+Logic Level: UnboundLocalError or parsing failures log a warning but keep the worker alive.
+Logging:
+Uses scraper.utils.logger.
+Logs saved to ./logs/.
+Format: [TIMESTAMP] [LEVEL] [MODULE] Message.
+11. Known Limitations
+Hybrid Structure: The codebase is mid-migration. immobilier is in the root, while sites/ structure exists but is partially empty.
+Memory Usage: asyncio queues with huge backlogs can consume memory.
+Anti-Bot: While robust, Cloudflare challenges (Captchas) cannot be solved, only evaded via proxy rotation.
+12. Improvement & Optimization Axes
+Performance:
+Move the URL Queue to Redis to allow resuming crashes (currently in-memory).
+Implement "Headless" HTTP requests (no browser) for pages that don't require JS.
+Scalability:
+Kubernetes deployment for running hundreds of worker pods.
+Code Quality:
+Finish the migration to strictly enforce the sites/ folder structure.
+Add Type Hinting (mypy) to all parsers.
+
+13. Target Sites & Expansion Plan
+The project roadmap includes integrating the following sites into the modular `sites/` directory:
+
+*   **Real Estate (Immobilier)**
+    *   Ouedkniss, Krello, Beytic, Darrna, Essekna, Algeriahome, Lkeria
+*   **Automotive (Voiture)**
+    *   Ouedkniss, Tonobiles, ardias.fr, Autobessah, Djcar, Easyexport
+*   **Employment (Emploi)**
+    *   Ouedkniss, Emploipartner, Emploitic, Clicjob, Algeriejob
+*   **Electronics (Electromenager)**
+    *   Ouedkniss, Websoog, Diardzair, Jumia
+*   **Multimedia**
+    *   Ouedkniss, Jumia, Ajini, Homecenterdz, Starmania
+
+14. Future Roadmap Suggestions
+Central Dispatcher: Complete the dispatcher.py to dynamically load site modules based on CLI args (removing hardcoded imports).
+Dashboard: A simple Streamlit/React dashboard to view scraping stats (Progress, Proxy Health, Ads/min).
+API Output: Expose a FastAPI endpoint to query the scraped data in real-time.
+
+15. AI-READY SUMMARY PROMPT
+(Copy-paste this into any AI to give it instant context)
+
+PROJECT_DNA:
+Type: Async Python Scraper Framework (Kloufi-Scrape)
+Stack: Python 3.12, Asyncio, Playwright (Crawl4AI), Docker, Redis.
+Architecture: Producer-Consumer (Listing -> Queue -> Details).
+Key Components:
+- Engine: scraper/ (browser, crawling, proxy rotation).
+- Business Logic: sites/<category>/<site>/ (parsers).
+- Data: Schema defined in categories_data_structure.py.
+- Target Sites: Ouedkniss + 15 others (Krello, Tonobiles, etc.).
+Current State: Hybrid refactor. 'immobilier' logic is in root, moving to 'sites/'.
+Critical Files:
+- docker-compose.yml: Entry point.
+- scraper/main.py: Pipeline orchestrator.
+- normalization_and_utils.py: Data cleaning.
+Goal: Scrape high-volume classifieds (Ouedkniss) while evading bot detection via sticky proxies and fingerprinting.
