@@ -1,86 +1,22 @@
 import json
 import asyncio
+import sys
+import os
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode, BrowserConfig
 from datetime import datetime
 from urllib.parse import unquote, urljoin
-import sys
-sys.path.insert(1, '../../../global')
-from insert_scrape import insert_data_to_es
 
-def traitement_prix(prix_dec, prix_unit):
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../../')))
+from utils.immobilier import ImmobilierUtils
 
-    if len(prix_dec) and len(prix_unit):
-        if prix_unit == "Millions":
-            return float(prix_dec) * 10000
-        elif prix_unit == "Milliards":
-            return float(prix_dec) * 10000000
-        else:
-            return float(prix_dec)
-    else:
-        prix_dec = 0
-        prix = ""
-
-def convert_property_type(raw_key):
-    valid_types = {
-        "Appartement", "Villa", "Local", "Terrain", "Niveau-de-villa", "Duplex", "Terrain-agricole", 
-        "Studio", "Immeuble", "Carcasse", "Autre", "Bungalow", "Chalet", "Salle", "Hotel"
-    }
-
-    normalization_map = {
-        "bungalow": "Bungalow",
-        "bungalows": "Bungalow",
-        "niveau": "Niveau-de-villa",
-        "niveau de villa": "Niveau de villa",
-        "terrain-agricole": "Terrain agricole",
-        "terrain agricole": "Terrain agricole",
-        "appartements": "Appartement",
-        "immeubles": "Immeuble",
-        "commerce, local": "Commerce",
-        "bureaux": "Bureau",
-        "ferme, terrain": "Ferme",
-        "residence": "Résidence",
-        "résidence": "Résidence",
-        "Niveau": "Niveau-de-villa",
-        "Usine": "Industriel",
-        "Commerce": "Local",
-        "Locaux": "Local",
-        "Bureau": "Local",
-        "Autres": "Autre",
-        "Hostel": "Hotel",
-        "Pavillon": "Villa",
-        "Appartements": "Appartement",
-        "Dortoir": "Hotel",
-        "Ferme": "Terrain-agricole",
-        "Triplex": "Duplex",
-        "Auberge": "Hotel",
-        "Commerce, Local": "Local",
-        "Maison": "Villa",
-        "Safari": "Hotel",
-        "Hangar": "Industriel"
-    }
-
-    if not raw_key or not isinstance(raw_key, str):
-        return ""
-
-    cleaned = raw_key.strip().lower()
-
-    normalized = normalization_map.get(cleaned, cleaned).capitalize()
-    if normalized in valid_types:
-        return normalized
-
-    lowered = raw_key.lower()
-    for key, value in normalization_map.items():
-        if key in lowered:
-            normalized_candidate = value
-            if normalized_candidate in valid_types:
-                return normalized_candidate
-
-    for valid in valid_types:
-        if valid.lower() in lowered:
-            return valid
-
-    return ""
+try:
+    sys.path.insert(1, '../../../global')
+    from insert_scrape import insert_data_to_es
+except ImportError:
+    def insert_data_to_es(data, index):
+        print(f"[Mock] Inserting data to ES index '{index}'")
 
 async def extract_property_details(url, transaction, bien):
     # Configure the browser
@@ -136,8 +72,8 @@ async def extract_property_details(url, transaction, bien):
         if price_element:
             price = price_element.text.strip()
             try:
-                price_dec, price_unit = price.replace("/M²", "").split(" ")
-                price_dec = traitement_prix(price_dec, price_unit)
+                price_str, price_unit = price.replace("/M²", "").split(" ")
+                price_dec = ImmobilierUtils.traitement_prix(price_str, price_unit)
                 with_price = "Avec prix"
             except ValueError as e:
                 print(f"Error: Unable to convert price to integer")
@@ -165,8 +101,8 @@ async def extract_property_details(url, transaction, bien):
             "date_depot": date_depot_formatted if date_depot else "",
             'transaction': transaction,
             'category': "immobilier",
-            'bien': convert_property_type(bien) if bien else "",
-            'superficie': surface_value.text.strip() if surface_value else "",
+            'bien': ImmobilierUtils.convert_property_type(bien) if bien else "",
+            'superficie': ImmobilierUtils.parse_float_or_none(surface_value.text.strip()) if surface_value else "",
             'superficie_unit': surface_unit,
             'nb_pieces': rooms.text.strip().lower().replace("f", "") if rooms else "",
             'description': description.text.strip() if description else "",
@@ -185,6 +121,3 @@ async def extract_property_details(url, transaction, bien):
         # Output the results
         print(json.dumps(property_details, indent=4))
         insert_data_to_es(property_details, "immobilier")
-
-# Run the asynchronous function
-# asyncio.run(extract_property_details("https://www.beytic.com/annonces-immobilieres/79465-vente-terrain-sidi-merouane-mila", transaction="Location", bien="Appartement"))

@@ -1,71 +1,21 @@
 import re
 import asyncio
+import sys
+import os
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
-import sys
+
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../../')))
+from utils.immobilier import ImmobilierUtils
+
 try:
     sys.path.insert(1, '../../../global')
-    from insert_scrape import insert_data_to_es
+    from insert_data_to_es import insert_data_to_es
 except ImportError:
     def insert_data_to_es(data, index_name):
         print(f"[Mock] Would insert into index '{index_name}': {data.get('titre', 'No title')}")
-
-
-def str_to_float(text):
-    try:
-        num = re.sub(r"[^\d.,]", "", text)
-        num = num.replace(",", ".")
-        return float(num)
-    except Exception:
-        return ""
-
-def convert_property_type(raw_key):
-    valid_types = {
-        "Appartement", "Villa", "Local", "Terrain", "Studio", "Hangar",
-        "Niveau de villa", "Immeuble", "Duplex", "Carcasse", "Autre",
-        "Bungalow", "Terrain agricole", "Usine", "Chalet", "Commerce",
-        "Locaux", "Bureau", "Autres", "Salle", "Hostel", "Dortoir",
-        "Ferme", "Hotel", "Triplex", "Maison", "Pavillon", "Auberge", "Résidence"
-    }
-
-    normalization_map = {
-        "bungalow": "Bungalow",
-        "bungalows": "Bungalow",
-        "niveau": "Niveau de villa",
-        "niveau de villa": "Niveau de villa",
-        "terrain-agricole": "Terrain agricole",
-        "terrain agricole": "Terrain agricole",
-        "appartements": "Appartement",
-        "immeubles": "Immeuble",
-        "commerce, local": "Commerce",
-        "bureaux": "Bureau",
-        "ferme, terrain": "Ferme",
-        "residence": "Résidence",
-        "résidence": "Résidence"
-    }
-
-    if not raw_key or not isinstance(raw_key, str):
-        return ""
-
-    cleaned = raw_key.strip().lower()
-
-    normalized = normalization_map.get(cleaned, cleaned).capitalize()
-    if normalized in valid_types:
-        return normalized
-
-    lowered = raw_key.lower()
-    for key, value in normalization_map.items():
-        if key in lowered:
-            normalized_candidate = value
-            if normalized_candidate in valid_types:
-                return normalized_candidate
-
-    for valid in valid_types:
-        if valid.lower() in lowered:
-            return valid
-
-    return ""
 
 def parse_address(address_details):
     adresse = ""
@@ -103,7 +53,7 @@ async def extract_property_details(url):
             url=url,
             config=CrawlerRunConfig(
                 cache_mode=CacheMode.BYPASS,
-                delay_before_return_html=5  # Reduced for speed; increase if page not fully loaded
+                delay_before_return_html=5
             )
         )
     
@@ -114,7 +64,7 @@ async def extract_property_details(url):
     
     # Initialize fields
     titre = ""
-    date_depot = datetime.now().strftime("%Y-%m-%d")  # Fallback to today if not found
+    date_depot = datetime.now().strftime("%Y-%m-%d")
     transaction = "vente"
     superficie_text = ""
     no_pieces = ""
@@ -139,16 +89,13 @@ async def extract_property_details(url):
         seen = set()
         for img in img_tags:
             src = img.get("src")
-            if src and src.startswith("data:image/svg"):  # Lazy-loaded placeholder
+            if src and src.startswith("data:image/svg"):
                 src = img.get("data-lazy-src")
-            # If no src or still placeholder, try data-lazy-src anyway
             if not src or src.startswith("data:image/svg"):
                 src = img.get("data-lazy-src")
             
             if src and src.startswith("https://www.residencedz.com") and src not in seen:
-                # Optional: upgrade to higher resolution by replacing thumbnail size
                 src = src.replace("-143x83.", ".")
-                # Also handle cases without size suffix (already full)
                 images_list.append(src)
                 seen.add(src)
         
@@ -205,8 +152,8 @@ async def extract_property_details(url):
     if not numero:
         numero = url.rstrip("/").split("/")[-1]
     
-    superficie_val = str_to_float(superficie_text)
-    prix_dec = str_to_float(price_text) if price_text else 0
+    superficie_val = ImmobilierUtils.parse_float_or_none(superficie_text)
+    prix_dec = ImmobilierUtils.parse_float_or_none(price_text) if price_text else 0
     
     now_iso = datetime.now().isoformat()
     
@@ -219,7 +166,7 @@ async def extract_property_details(url):
         "date_depot": date_depot,
         "transaction": transaction,
         "category": "immobilier",
-        "bien": convert_property_type(titre) if titre else "",
+        "bien": ImmobilierUtils.convert_property_type(titre) if titre else "",
         "superficie": superficie_val,
         "superficie_unit": "m²",
         "no_pieces": no_pieces,

@@ -4,100 +4,23 @@ import re
 import locale
 import json
 import asyncio
+import sys
+import os
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode, BrowserConfig
 from datetime import datetime
 from urllib.parse import unquote, urljoin
-import sys
-sys.path.insert(1, '../../global')
-from insert_scrape import insert_data_to_es
-# locale.setlocale(locale.LC_TIME, "fr_FR")
 
-def avec_sans_photo(image):
-    if len(str(image)):
-        as_photo = "Avec photo"
-        return as_photo
-    else:
-        as_photo = "Sans photo"
-        return as_photo
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
+from utils.multimedia import MultimediaUtils
 
-
-def avec_sans_prix(Prix_dec, Prix_unit):
-
-    if len(Prix_dec) and len(Prix_unit) and float(Prix_dec) != 0:
-        as_prix = "Avec prix"
-        return as_prix
-    else:
-        as_prix = "Sans prix"
-        return as_prix
-
-# Convertir le prix vers le DA
-
-
-def traitement_prix(prix_dec, prix_unit):
-
-    if len(prix_dec) and len(prix_unit):
-        if prix_unit == "Millions":
-            return float(prix_dec) * 10000
-        elif prix_unit == "Milliards":
-            return float(prix_dec) * 10000000
-        else:
-            return float(prix_dec)
-    else:
-        prix_dec = 0
-        prix = "Annonce sans prix"
-
-# Vérifier l existence d une valeur pour la transformer en float
-
-
-def str_to_float(valeur):
-
-    if not valeur:
-        valeur = ""
-        return valeur
-    else:
-        valeur = valeur.replace(",", ".")
-        valeur = float(valeur)
-        return valeur
-
-# Vérifier l existence d une valeur pour la transformer en float
-
-
-def str_to_int(valeur):
-
-    if not valeur:
-        valeur = ""
-        return valeur
-    else:
-        valeur = int(valeur)
-        return valeur
-
-
-# Vérifier l existence d une valeur pour la transformer en date  ---------  (non utilise ) ----------
-
-def str_to_date(valeur):
-
-    if not valeur:
-        valeur = ""
-        return valeur
-    else:
-        # valeur = datetime.strptime(''.join(response.css('h1#Title::text').re("[A-Z].+(\d+\d+\d+\d+)")),'%Y')
-        return valeur
-
-# Vérifier l existence d une valeur pour la transformer en float
-
-
-def categorie(valeur):
-
-    if not valeur:
-        valeur = ""
-        return valeur
-    elif valeur == "Téléphone portable":
-        return "Smartphones"
-    elif valeur == "Accessoires & Smartwatches":
-        return "Accessoires"
-    else:
-        return valeur
+try:
+    sys.path.insert(1, '../../global')
+    from insert_scrape import insert_data_to_es
+except ImportError:
+    def insert_data_to_es(data, index):
+        print(f"[Mock] Inserting data to ES index '{index}'")
 
 
 async def extract_multimedia_details(url, item):
@@ -228,7 +151,7 @@ async def extract_multimedia_details(url, item):
             'site_origine': "Jumia.dz",
             'transaction': "Vente",
             'category':"multimedia",
-            'categorie' : categorie(categorie_text) if categorie_text else "",
+            'categorie' : MultimediaUtils.normalize_categorie(categorie_text) if categorie_text else "",
             'description' : description,
             'date_depot': datetime.now().isoformat(),
             'marque': re.search(r'Produits similaires par (\w+\s?\w+?)</', result.html).group(1) if re.search(r'Produits similaires par (\w+\s?\w+?)</', result.html) else "",
@@ -236,7 +159,7 @@ async def extract_multimedia_details(url, item):
             'garantie': garantie if garantie else "",
             'garantie_unit': garantie_unit if garantie_unit else [],
             'dimension': dimensions,
-            'taille_ecran': str_to_float(item_details_technique.get("Taille de l'écran (pouces)", "")) if item_details_technique.get("Taille de l'écran (pouces)") else "",
+            'taille_ecran': MultimediaUtils.str_to_float(item_details_technique.get("Taille de l'écran (pouces)", "")) if item_details_technique.get("Taille de l'écran (pouces)") else "",
             'os': os.capitalize() if os else "",
             'os_version': os_version if os_version else "",
             'poid': item_details_technique.get("Poids (kg)", "") if item_details_technique.get("Poids (kg)") else "",
@@ -251,8 +174,8 @@ async def extract_multimedia_details(url, item):
             'status': 200,
             'date_crawl': datetime.now().isoformat(),
             'date_verif': datetime.now().isoformat(),
-            'as_photo': as_photo,
-            'as_prix': "Avec prix" if item['price'] and item['price'] != "" else "Sans prix",
+            'as_photo': MultimediaUtils.avec_sans_photo(images_list),
+            'as_prix': MultimediaUtils.avec_sans_prix(item.get('price', ''), 'DA'),
             'type_ecran': type_ecran_match.group(1) if type_ecran_match else "",
             'processor_cores': processor_cores_match.group(1) if processor_cores_match else "",
             'processor_hz': processor_hz_match.group(1) if processor_hz_match else "",

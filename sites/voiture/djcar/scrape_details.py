@@ -4,32 +4,18 @@ from datetime import datetime
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 from tenacity import retry, stop_after_attempt, wait_exponential
-import sys
+import sys, os
+
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
+from utils.voiture import VoitureUtils
 
 try:
     sys.path.insert(1, '../../global')
     from insert_scrape import insert_data_to_es
 except ImportError:
-
     def insert_data_to_es(data, index):
         print(f"[Mock] Inserting data to ES index '{index}'")
-
-def str_to_float(text):
-    try:
-        num = re.sub(r"[^\d.,]", "", text)
-        if ',' in num and '.' in num:
-            if num.rfind(',') > num.rfind('.'):
-                # , is decimal, . is thousands
-                num = num.replace('.', '').replace(',', '.')
-            else:
-                # . is decimal, , is thousands
-                num = num.replace(',', '')
-        elif ',' in num:
-            # Assume , is decimal
-            num = num.replace(',', '.')
-        return float(num)
-    except Exception:
-        return 0
 
 def extract_engine_size(moteur_text):
     """
@@ -60,80 +46,6 @@ def extract_engine_size(moteur_text):
             return potential_size
     
     return 0
-
-def normalize_energie(value: str) -> str:
-    """
-    Normalize fuel type/energy source.
-    """
-    if not value:
-        return ""
-        
-    mapping = {
-        # Essence
-        "Essence": "Essence",
-        "Petrol": "Essence",
-        "Gasoline": "Essence",
-        "Essence, Compatible E-10": "Essence",
-
-        # Diesel
-        "Diesel": "Diesel",
-        "Diesel, Compatible E-10": "Diesel",
-
-        # GPL
-        "GPL": "GPL",
-        "GPL, Compatible E-10": "GPL",
-        "Essence / GPL": "GPL",
-
-        # Electrique
-        "Electrique": "Electrique",
-
-        # Hybride
-        "Hybride": "Hybride",
-        "Hybrid": "Hybride",
-        "Hybrid (gasoline/electric)": "Hybride",
-        "Hybride (essence/électrique)": "Hybride",
-        "Hybride (diesel/électrique)": "Hybride",
-
-        # Hybride Rechargeable
-        "Hybride (essence/électrique), Hybride rechargeable": "Hybride Rechargeable",
-        "Hybride (essence/électrique), Compatible E-10, Hybride rechargeable": "Hybride Rechargeable",
-
-        # Multi-énergie
-        "Essence / Hybride": "Multi-énergie",
-        "Essence / Hybride / Electrique": "Multi-énergie",
-
-        # Unknown entries mapped as requested
-        "energie-1": "Essence",
-        "energie-2": "Diesel",
-        "energie-3": "GPL",
-    }
-
-    return mapping.get(value.strip(), "Multi-énergie")
-    
-def normalize_transmission(value: str) -> str:
-    """
-    Normalize transmission type.
-    """
-    if not value:
-        return ""
-
-    val_upper = value.strip().upper()
-    
-    # Checking for specific keywords
-    if val_upper in ["AT", "DCT", "CVT", "E-CVT", "DHT", "AMT", "TCT", "E-CVT+AT", "ISR"]:
-        return "Automatique"
-        
-    if "SEMI" in val_upper:
-        return "Semi-Automatique"
-        
-    if "AUTOMATIQUE" in val_upper or "AUTOMATIC" in val_upper:
-        return "Automatique"
-        
-    if "MANUELLE" in val_upper or "MANUAL" in val_upper or "MÉCANIQUE" in val_upper or "MT" == val_upper:
-        return "Manuelle"
-        
-    return value.strip()
-
 
 def save_to_json_file(data, filename="scraped_vehicles.json"):
     try:
@@ -188,17 +100,18 @@ async def extract_car_details(url):
         raise Exception("Empty title encountered")
     
     # Price extraction - Updated to more specific selector
-    price = ""
+    price_raw = ""
     price_value = 0
     try:
         price_elem = soup.find("div", class_="price car-price text-right")
         if price_elem:
             bdi_elem = price_elem.find("bdi", class_="new-price")
             if bdi_elem:
-                price = bdi_elem.get_text(strip=True)
-                price_value = str_to_float(price)
+                price_raw = bdi_elem.get_text(strip=True)
     except Exception as e:
         print(f"Price error: {e}")
+        
+    _, price_value_str, price_decimal, _ = VoitureUtils.parse_price(price_raw)
 
 
     # For Djcar.fr (second scraper)
@@ -259,7 +172,7 @@ async def extract_car_details(url):
 
     # Extract fuel type and engine size for filtering
     raw_carburant = vehicle_data.get("carburant", "")
-    energie = normalize_energie(raw_carburant)
+    energie = VoitureUtils.normalize_fuel(raw_carburant)
     
     raw_moteur = vehicle_data.get("engine", "")
     engine_size = extract_engine_size(raw_moteur)
@@ -304,9 +217,8 @@ async def extract_car_details(url):
         print(f"Options error: {e}")
 
     # Split kilometerage into value and unit
-    km = vehicle_data.get("kilometrage", "").split()
-    km_value = km[0] if km else ""
-    km_unit = km[1] if len(km) > 1 else ""
+    km_raw = vehicle_data.get("kilometrage", "")
+    km_val, km_unit = VoitureUtils.normalize_mileage(km_raw)
 
     # Construct final data with all fields - Updated keys
     vehicle_info = {
@@ -322,22 +234,22 @@ async def extract_car_details(url):
         "annee": vehicle_data.get("annee", ""),
         "marque": vehicle_data.get("marque", title.split()[0] if title else ""),
         "model": vehicle_data.get("modele", vehicle_data.get("model", "")),
-        "km": km_value,
-        "km_unit": km_unit,
+        "km": km_val,
+        "km_unit": km_unit, 
         "moteur": raw_moteur,
         "couleur": vehicle_data.get("exterior_color", vehicle_data.get("couleur", "")),
         "options": options,
         "energie": energie,
-        "transmission": normalize_transmission(vehicle_data.get("transmission", "")),
-        "prix": price,
-        "prix_value": price_value,
-        "prix_dec": price_value,
+        "transmission": VoitureUtils.normalize_transmission(vehicle_data.get("transmission", "")),
+        "prix": price_raw,
+        "prix_value": price_value_str,
+        "prix_dec": price_decimal,
         "prix_unit": "€",
         "etat": vehicle_data.get("etat", "Occasion"),
         "date_crawl": datetime.now().isoformat(),
         "status": "200",
         "as_photo": "Avec photo" if images else "Sans photo",
-        "as_prix": "Avec prix" if price_value else "Sans prix",
+        "as_prix": "Avec prix" if price_decimal > 0 else "Sans prix",
         "wilaya": "",
         "commune": "",
         "tax": "HT",
@@ -351,8 +263,7 @@ async def extract_car_details(url):
         elif isinstance(vehicle_info[key], list) and not vehicle_info[key]:
             vehicle_info[key] = []
     
-    print(f"✅ ACCEPTED: {vehicle_info['numero']} - {energie} {engine_size}L - {km_value} {km_unit}")
-    print(vehicle_info)
+    print(f"✅ ACCEPTED: {vehicle_info['numero']} - {energie} {engine_size}L - {km_val} {km_unit}")
     insert_data_to_es(vehicle_info, "voiture")
     # save_to_json_file(vehicle_info)
     return vehicle_info

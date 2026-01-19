@@ -1,12 +1,22 @@
 import re
 import asyncio
 import json
+import sys
+import os
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
-import sys
-sys.path.insert(1, '../../global')
 
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
+from utils.emploi import EmploiUtils
+
+try:
+    sys.path.insert(1, '../../global')
+    from insert_scrape import insert_data_to_es
+except ImportError:
+    def insert_data_to_es(data, index):
+        print(f"[Mock] Inserting data to ES index '{index}'")
 
 def parse_header_info(soup):
     """
@@ -64,111 +74,6 @@ def parse_header_info(soup):
                 header_data["images"].append(src)
     
     return header_data
-
-def normalize_domaine(domaine):
-    """
-    Normalize domain/sector values to standard categories.
-    """
-    mapping = {
-        "Formation / Education": "Administration & Management",
-        "Achats": "Achat & Logistique",
-        "Commercial, vente": "Commerce & Vente",
-        "Gestion, comptabilité, finance": "Comptabilité & Audit",
-        "Informatique, nouvelles technologies": "Informatique & Internet",
-        "Juridique": "Juridique",
-        "Management, direction générale": "Administration & Management",
-        "Marketing, communication": "Commercial & Marketing",
-        "Métiers de la santé et du social": "Medecine & Santé",
-        "Métiers des services": "Services",
-        "Métiers du BTP": "Construction & Travaux",
-        "Production, maintenance, qualité": "Industrie & Production",
-        "R&D, gestion de projets": "Recherche & developpement",
-        "RH, formation": "Administration & Management",
-        "Secrétariat, assistanat": "Bureautique & Secretariat",
-        "Télémarketing, téléassistance": "Commercial & Marketing",
-        "Tourisme, hôtellerie, restauration": "Tourisme & Gastronomie",
-        "Transport, logistique": "Achat & Logistique",
-        "Services": "Services",  # Added this explicit mapping
-    }
-
-    return mapping.get(domaine.strip(), domaine.strip())
-
-def normalize_diplome(diplome):
-    """
-    Normalize diploma values to standard categories.
-    """
-    mapping = {
-        "niveau secondaire": "Diplome de collège",
-        "niveau terminal": "Diplome de collège",
-        "baccalauréat": "Bac",
-        "bac +2": "Diplome universitaire",
-        "ts bac +2": "Diplome universitaire",
-        "ts bac +2 | formation professionnelle": "Diplôme professionnel / téchnique",
-        "licence": "Diplome universitaire",
-        "licence (lmd), bac + 3": "Diplome universitaire",
-        "licence bac + 4": "Diplome universitaire",
-        "bac + 3": "Diplome universitaire",
-        "bac+3": "Diplome universitaire",
-        "master 1": "Master",
-        "master 1, licence  bac + 4": "Diplome universitaire",
-        "master 2, ingéniorat, bac + 5": "Master",  # Updated to match the example
-        "baster 2": "Master",
-        "ingéniorat": "Diplome universitaire",
-        "bac + 5": "Diplome universitaire",
-        "magistère bac + 7": "Diplome universitaire",
-        "doctorat": "Doctorat",
-        "certification": "Diplôme professionnel / téchnique",
-        "formation professionnelle": "Diplôme professionnel / téchnique",
-        "universitaire sans diplôme": "Diplôme professionnel / téchnique",
-        "non diplômante": None,
-        "sans diplôme": None,
-        "sans diplome": None,
-    }
-    
-    return mapping.get(diplome.lower() if diplome else "", diplome)
-
-def normalize_date(date_text):
-    """
-    Convert relative date text like "il y a 3 jours" to an actual date in ISO format.
-    """
-    if not date_text:
-        return ""
-    
-    # Normalize the text (lowercase, replace multiple spaces)
-    date_text = re.sub(r'\s+', ' ', date_text.lower().strip())
-    
-    # Match patterns like "il y a X jours/semaines/mois/années"
-    day_match = re.search(r'il y a (\d+) jour', date_text)
-    week_match = re.search(r'il y a (\d+) semaine', date_text)
-    month_match = re.search(r'il y a (\d+) mois', date_text)
-    year_match = re.search(r'il y a (\d+) an', date_text)
-    
-    today = datetime.now()
-    
-    if day_match:
-        days = int(day_match.group(1))
-        target_date = today - timedelta(days=days)
-    elif week_match:
-        weeks = int(week_match.group(1))
-        target_date = today - timedelta(weeks=weeks)
-    elif month_match:
-        months = int(month_match.group(1))
-        # Approximate months as 30 days
-        target_date = today - timedelta(days=months*30)
-    elif year_match:
-        years = int(year_match.group(1))
-        # Approximate years as 365 days
-        target_date = today - timedelta(days=years*365)
-    elif "aujourd'hui" in date_text or "aujourd" in date_text:
-        target_date = today
-    elif "hier" in date_text:
-        target_date = today - timedelta(days=1)
-    else:
-        # If we can't parse it, return the original text
-        return date_text
-    
-    # Return in ISO format (YYYY-MM-DD)
-    return target_date.strftime('%Y-%m-%d')
 
 def parse_dl_details(soup):
     """
@@ -264,11 +169,11 @@ async def extract_job_details(url=None, html_content=None):
     
     # Get sector/domain and normalize it
     domaine_raw = dl_details.get("secteur d'activité", "")
-    domaine = normalize_domaine(domaine_raw)
+    domaine = EmploiUtils.normalize_domaine(domaine_raw)
     
     # Get and normalize posting date
     date_depot_text = dl_details.get("date de création", "")
-    date_depot = normalize_date(date_depot_text)
+    date_depot = EmploiUtils.normalize_date(date_depot_text)
     
     # Get position level
     niveau_text = dl_details.get("niveau de poste", "")
@@ -276,8 +181,8 @@ async def extract_job_details(url=None, html_content=None):
     
     # Get diploma requirements and normalize
     diplome_text = dl_details.get("niveau d'étude (diplome)", "")
-    diplome_raw = normalize_diplome(diplome_text) if diplome_text else []
-    diplome = [normalize_diplome(d) for d in diplome_raw]
+    diplome_raw = [diplome_text] if diplome_text else []
+    diplome = [EmploiUtils.normalize_diplome(d) for d in diplome_raw if EmploiUtils.normalize_diplome(d)]
     
     # Get contract type
     contrat = dl_details.get("type de contrat", "")

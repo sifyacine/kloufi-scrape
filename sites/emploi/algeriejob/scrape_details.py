@@ -1,120 +1,35 @@
 import asyncio
 import json
+import sys
+import os
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode, BrowserConfig
 from datetime import datetime
-import sys
-sys.path.insert(1, '../../global')
-from insert_scrape import insert_data_to_es
 
-def traitement_prix(prix_dec, prix_unit):
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
+from utils.emploi import EmploiUtils
 
-    if len(prix_dec) and len(prix_unit):
-        if prix_unit == "Millions":
-            return float(prix_dec) * 10000
-        elif prix_unit == "Milliards":
-            return float(prix_dec) * 10000000
-        else:
-            return float(prix_dec)
-    else:
-        prix_dec = 0
-
-
-def diplome(diplome):
-    if diplome == "Niveau secondaire": return "Diplome de collège"
-    elif diplome == "Baccalauréat": return "Bac"
-    elif diplome == "Bac +2": return "Diplome universitaire"
-    elif diplome == "Licence": return "Diplome universitaire"
-    elif diplome == "Bac + 3": return "Diplome universitaire"
-    elif diplome == "Bac+3": return "Diplome universitaire"
-    elif diplome == "Master 1": return "Master"
-    elif diplome == "Licence Bac + 4": return "Diplome universitaire"
-    elif diplome == "Master 2": return "Master"
-    elif diplome == "Ingéniorat": return "Diplome universitaire"
-    elif diplome == "Bac + 5": return "Diplome universitaire"
-    elif diplome == "Magistère Bac + 7": return "Diplome universitaire"
-    elif diplome == "Certification": return "Diplôme professionnel / téchnique"
-
-
-def traitement_wilaya(address):
-    try:
-        return address.split(',')[0].strip()
-    except:
-        return "N/A"
-
+try:
+    sys.path.insert(1, '../../global')
+    from insert_scrape import insert_data_to_es
+except ImportError:
+    def insert_data_to_es(data, index):
+        print(f"[Mock] Inserting data to ES index '{index}'")
 
 def normalize_experience(exp_str):
+    """Normalize experience level for algeriejob"""
     exp_str = exp_str.strip()
-
     if exp_str in ["Débutant < 2 ans", "Jeune Diplômé"]:
         return "Jeune Diplômé"
     elif exp_str in ["Expérience entre 2 ans et 5 ans"]:
         return "Débutant / Junior"
-    elif exp_str in ["Expérience entre 5 ans et 10 ans"]:
-        return "Confirmé / Expérimenté"
-    elif exp_str in ["Expérience > 10 ans"]:
+    elif exp_str in ["Expérience entre 5 ans et 10 ans", "Expérience > 10 ans"]:
         return "Confirmé / Expérimenté"
     elif exp_str in ["Etudiant"]:
         return "Etudiant"
     else:
         return exp_str
-
-def traitement_domaine(domaine):
-    # Commerce & Vente
-    # Commercial & Marketing
-    # Industrie & Production
-    # Tourisme & Gastronomie
-    # Beauté & Esthétique
-    # Nettoyage & Hygiène
-    # Bureautique & Secretariat
-    # Informatique & Internet
-    # Couture et Confection
-    # Comptabilité & Audit
-    # Administration & Management
-    # Graphisme & Communication
-    # Agents polyvalents
-    # Mécanique Auto
-    # Eléctronique & Téchnique
-    # Artisanat
-    # Securité
-    # Immobilier
-    # Juridique
-    # Achat & Logistique
-    # Journalisme & Pressente
-    # Environnement
-    # Recherche & developpement
-    # Construction & Travaux
-    # Carburants & Mines
-    # Transport & Chauffeurs
-    # Medecine & Santé
-    # Banque
-    # Assurance
-    # Distribution
-    # Industries
-    # Services
-    # Autre
-
-    mapping = {
-        "Achats": "Achat & Logistique",
-        "Commercial, vente": "Commerce & Vente",
-        "Gestion, comptabilité, finance": "Comptabilité & Audit",
-        "Informatique, nouvelles technologies": "Informatique & Internet",
-        "Juridique": "Juridique",
-        "Management, direction générale": "Administration & Management",
-        "Marketing, communication": "Commercial & Marketing",
-        "Métiers de la santé et du social": "Medecine & Santé",
-        "Métiers des services": "Services",
-        "Métiers du BTP": "Construction & Travaux",
-        "Production, maintenance, qualité": "Industrie & Production",
-        "R&D, gestion de projets": "Recherche & developpement",
-        "RH, formation": "Administration & Management",
-        "Secrétariat, assistanat":  "Bureautique & Secretariat",
-        "Télémarketing, téléassistance": "Commercial & Marketing",
-        "Tourisme, hôtellerie, restauration": "Tourisme & Gastronomie",
-        "Transport, logistique": "Achat & Logistique",
-    }
-    
-    return mapping.get(domaine.strip(), "Autre")
 
 async def scrape_single_url_with_crawl4ai_and_bs4(url, job):
     print(f"Scraping URL: {url}")
@@ -224,13 +139,15 @@ async def scrape_single_url_with_crawl4ai_and_bs4(url, job):
             
             if domaine_li:
                 domaine_text = domaine_li.find('span').text
-                domaine = traitement_domaine(domaine_text)
+                domaine = EmploiUtils.normalize_domaine(domaine_text)
 
             if diplome_li:
                 diplome_text = diplome_li.find('span').text
                 diplomes = diplome_text.split('-')
                 for dipl in diplomes:
-                    diplome_list_normalized.append(diplome(dipl.strip()))
+                    normalized = EmploiUtils.normalize_diplome(dipl.strip())
+                    if normalized:
+                        diplome_list_normalized.append(normalized)
                     diplome_list.append(dipl.strip())
 
             if contrat_li:

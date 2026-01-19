@@ -1,11 +1,22 @@
 import re
 import asyncio
 import json
+import sys
+import os
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
-import sys
-sys.path.insert(1, '../../global')
+
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
+from utils.emploi import EmploiUtils
+
+try:
+    sys.path.insert(1, '../../global')
+    from insert_scrape import insert_data_to_es
+except ImportError:
+    def insert_data_to_es(data, index):
+        print(f"[Mock] Inserting data to ES index '{index}'")
 
 def parse_diplome(diplome_text):
     # Use regex to split the diploma text by commas and trim extra spaces
@@ -51,119 +62,6 @@ def parse_header_info(soup):
 
     return header_data
 
-def normalize_domaine(domaine):
-    mapping = {
-        "Formation / Education": "Administration & Management",
-        "Achats": "Achat & Logistique",
-        "Commercial, vente": "Commerce & Vente",
-        "Gestion, comptabilité, finance": "Comptabilité & Audit",
-        "Informatique, nouvelles technologies": "Informatique & Internet",
-        "Juridique": "Juridique",
-        "Management, direction générale": "Administration & Management",
-        "Marketing, communication": "Commercial & Marketing",
-        "Métiers de la santé et du social": "Medecine & Santé",
-        "Métiers des services": "Services",
-        "Métiers du BTP": "Construction & Travaux",
-        "Production, maintenance, qualité": "Industrie & Production",
-        "R&D, gestion de projets": "Recherche & developpement",
-        "RH, formation": "Administration & Management",
-        "Secrétariat, assistanat":  "Bureautique & Secretariat",
-        "Télémarketing, téléassistance": "Commercial & Marketing",
-        "Tourisme, hôtellerie, restauration": "Tourisme & Gastronomie",
-        "Transport, logistique": "Achat & Logistique",
-    }
-
-    return mapping.get(domaine.strip(), domaine.strip())
-
-def normalize_diplome(diplome):
-    mapping = {
-        "niveau secondaire": "Diplome de collège",
-        "niveau terminal": "Diplome de collège",
-        "baccalauréat": "Bac",
-        "bac +2": "Diplome universitaire",
-        "ts bac +2": "Diplome universitaire",
-        "ts bac +2 | Formation Professionnelle": "Diplôme professionnel / téchnique",
-        "licence": "Diplome universitaire",
-        "licence (lmd), bac + 3": "Diplome universitaire",
-        "licence bac + 4": "Diplome universitaire",
-        "bac + 3": "Diplome universitaire",
-        "bac+3": "Diplome universitaire",
-        "master 1": "Master",
-        "master 1, licence  bac + 4": "Diplome universitaire",
-        "master 2, ingéniorat, bac + 5": "Diplome universitaire",
-        "baster 2": "Master",
-        "ingéniorat": "Diplome universitaire",
-        "bac + 5": "Diplome universitaire",
-        "magistère bac + 7": "Diplome universitaire",
-        "doctorat": "Doctorat",
-        "certification": "Diplôme professionnel / téchnique",
-        "formation professionnelle": "Diplôme professionnel / téchnique",
-        "universitaire sans diplôme": "Diplôme professionnel / téchnique",
-        "non diplômante": None,
-        "sans diplôme": None,
-        "sans diplome": None,
-    }
-    return mapping.get(diplome.lower() if diplome else "", diplome)
-
-def normalize_date(date_text):
-    """
-    Convert date text to an actual date in ISO format.
-    Handles both relative dates like "il y a 3 jours" and actual dates like "28-04-2025 à 18:37:44"
-    """
-    if not date_text:
-        return ""
-    
-    # Normalize the text (lowercase, replace multiple spaces)
-    date_text = re.sub(r'\s+', ' ', date_text.lower().strip())
-    
-    # Check if it's a standard date format (DD-MM-YYYY)
-    std_date_match = re.search(r'(\d{2}-\d{2}-\d{4})', date_text)
-    if std_date_match:
-        # Extract just the date part
-        date_str = std_date_match.group(1)
-        try:
-            # Parse the date
-            date_parts = date_str.split('-')
-            if len(date_parts) == 3:
-                day, month, year = date_parts
-                target_date = datetime(int(year), int(month), int(day))
-                return target_date.strftime('%Y-%m-%d')
-        except Exception:
-            pass
-
-    # Match patterns like "il y a X jours/semaines/mois/années"
-    day_match = re.search(r'il y a (\d+) jour', date_text)
-    week_match = re.search(r'il y a (\d+) semaine', date_text)
-    month_match = re.search(r'il y a (\d+) mois', date_text)
-    year_match = re.search(r'il y a (\d+) an', date_text)
-    
-    today = datetime.now()
-    
-    if day_match:
-        days = int(day_match.group(1))
-        target_date = today - timedelta(days=days)
-    elif week_match:
-        weeks = int(week_match.group(1))
-        target_date = today - timedelta(weeks=weeks)
-    elif month_match:
-        months = int(month_match.group(1))
-        # Approximate months as 30 days
-        target_date = today - timedelta(days=months*30)
-    elif year_match:
-        years = int(year_match.group(1))
-        # Approximate years as 365 days
-        target_date = today - timedelta(days=years*365)
-    elif "aujourd'hui" in date_text or "aujourd" in date_text:
-        target_date = today
-    elif "hier" in date_text:
-        target_date = today - timedelta(days=1)
-    else:
-        # If we can't parse it, return the original text
-        return date_text
-    
-    # Return in ISO format (YYYY-MM-DD)
-    return target_date.strftime('%Y-%m-%d')
-
 def extract_carax_details(soup):
     """
     Extract details from the carax section which contains categorization information.
@@ -188,38 +86,6 @@ def parse_description(soup):
     if desc_div:
         return re.sub(r'\s+', ' ', desc_div.get_text(" ", strip=True))
     return ""
-
-def extract_diplome_from_description(description):
-    """
-    Extract diploma information from the job description.
-    """
-    # Look for mentions of diplomas in the description
-    diploma_keywords = [
-        "diplôme en", "diplôme d'", "diplôme de",
-        "titulaire d'un", "titulaire de", "titulaire du",
-        "bac +", "bac+", "licence", "master", "doctorat",
-        "formation en", "formation d'", "formation de",
-        "niveau d'étude", "niveau étude"
-    ]
-    
-    diplomes = []
-    for keyword in diploma_keywords:
-        if keyword.lower() in description.lower():
-            # Find the sentence containing the keyword
-            sentences = re.split(r'[.;\n]', description)
-            for sentence in sentences:
-                if keyword.lower() in sentence.lower():
-                    # Add this as a potential diploma requirement
-                    diplomes.append(sentence.strip())
-                    break
-    
-    # Extract specific diploma from description if found
-    diploma_pattern = r'diplôme\s+(?:en|d\'|de)\s+([^,\.;]+)'
-    diploma_match = re.search(diploma_pattern, description, re.IGNORECASE)
-    if diploma_match:
-        diplomes.append(diploma_match.group(1).strip())
-    
-    return diplomes
 
 async def extract_job_details(url):
     browser_config = BrowserConfig(
@@ -248,16 +114,16 @@ async def extract_job_details(url):
         carax_details = extract_carax_details(soup)
         
         # 3) Extract and normalize category/domain
-        domaine = normalize_domaine(carax_details.get("catégories", ""))
+        domaine = EmploiUtils.normalize_domaine(carax_details.get("catégories", ""))
         
         # 4) Get publication date
-        date_depot = normalize_date(carax_details.get("publiée le", ""))
+        date_depot = EmploiUtils.normalize_date(carax_details.get("publiée le", ""))
         
         # 5) Get description
         description = parse_description(soup)
         
         # 6) Extract diploma from description since it's not in a structured field
-        raw_diplomes = extract_diplome_from_description(description)
+        raw_diplomes = EmploiUtils.extract_diplome_from_description(description)
         
         # Extract specific diploma mentioned in the description
         if "Diplôme en langues" in description:
@@ -265,9 +131,9 @@ async def extract_job_details(url):
         
         # 7) Normalize diplomas
         diplome = [
-            normalize_diplome(item)
+            EmploiUtils.normalize_diplome(item)
             for item in raw_diplomes
-            if normalize_diplome(item)
+            if EmploiUtils.normalize_diplome(item)
         ]
         
         # If no specific diploma was found but there are mentions of education requirements
@@ -313,4 +179,5 @@ async def extract_job_details(url):
         }
         
         print("Extracted Job Details:", job_details)
+        insert_data_to_es(job_details, "emploi")
         return job_details

@@ -4,23 +4,18 @@ import re
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode, BrowserConfig
 from datetime import datetime
-import sys
-sys.path.insert(1, '../../global')
-from insert_scrape import insert_data_to_es
+import sys, os
 
-def traitement_prix(prix_dec, prix_unit):
-    """
-    Convert price based on unit (Millions, Milliards).
-    """
-    try:
-        prix_dec = float(prix_dec)
-        if prix_unit == "Millions":
-            return prix_dec * 1_000_000
-        elif prix_unit == "Milliards":
-            return prix_dec * 1_000_000_000
-        return prix_dec
-    except (ValueError, TypeError):
-        return 0  # Default to 0 if conversion fails
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
+from utils.voiture import VoitureUtils
+
+try:
+    sys.path.insert(1, '../../global')
+    from insert_scrape import insert_data_to_es
+except ImportError:
+    def insert_data_to_es(data, index):
+        print(f"[Mock] Inserting data to ES index '{index}'")
 
 async def scrape_car_details(url, item, etat):
     print(f"Scraping URL: {url}")
@@ -92,15 +87,18 @@ async def scrape_car_details(url, item, etat):
         description = description.text.strip() if description else ""
 
         # Extract price
-        price_value, price_quantity = "0", "DA"
-        price = soup.find("div", class_="vehica-car-price")
-        if price:
-            price_text = price.text.strip()
-            price_parts = price_text.split(" ")
-            if len(price_parts) == 2:
-                price_value, price_quantity = price_parts
-            elif len(price_parts) == 1:
-                price_value = price_parts[0]
+        price_raw = ""
+        price_elem = soup.find("div", class_="vehica-car-price")
+        if price_elem:
+            price_raw = price_elem.get_text(strip=True)
+        elif item and item.get('price'):
+             price_raw = str(item['price'])
+             
+        if price_raw == "Contactez pour le prix":
+             price_raw = ""
+             
+        _, price_value_str, price_decimal, price_unit = VoitureUtils.parse_price(price_raw)
+
 
         # Extract attributes
         attributes = {}
@@ -115,12 +113,18 @@ async def scrape_car_details(url, item, etat):
         wilaya_element = soup.select_one('div.vehica-car-features a[href*="wilaya="]')
         wilaya = wilaya_element.text.strip() if wilaya_element else ""
         
-        km = attributes.get("Kilométrage", "").replace(" km", "").replace(" KM", "") if attributes.get("Kilométrage") else ""
-        if km != "":
-            car_features = soup.select_one('div.vehica-car-feature')
-            if car_features:
-                km_match = re.search(r'(\d+)\s*KM', car_features.text)
-                km = km_match.group(1) if km_match else km
+        # Mileage extraction
+        km_raw = ""
+        if attributes.get("Kilométrage"):
+            km_raw = attributes.get("Kilométrage")
+        else:
+             car_features = soup.select_one('div.vehica-car-feature')
+             if car_features:
+                 km_match = re.search(r'(\d+)\s*KM', car_features.text, re.IGNORECASE)
+                 if km_match:
+                     km_raw = km_match.group(1) + " KM"
+                     
+        km_val, km_unit = VoitureUtils.normalize_mileage(km_raw)
                 
         pattern = r"\b(produit[s]?\s+chimique[s]?|monétaires?|tachetée[s]?|masquée[s]?|nettoyer|billet[s]?|nettoyage|lavage|maculation|laveur|laboratoire|solution[s]?)\b"
         suspicious_text = re.search(pattern, description, re.IGNORECASE)
@@ -135,15 +139,15 @@ async def scrape_car_details(url, item, etat):
             "annee": attributes.get("Année", ""),
             "marque": attributes.get("Marque", ""),
             "model": attributes.get("Modèle", ""),
-            "km": km,
-            "km_unit": "km",
+            "km": km_val,
+            "km_unit": km_unit, 
             "couleur": attributes.get("Couleur", ""),
-            "energie": attributes.get("Enrgie", ""),
-            "transmission": attributes.get("Transmission", ""),
-            "prix": item['price'] if item['price'] and item['price'] != "Contactez pour le prix" else "",
-            "prix_unit": "DA" if item['price'] and item['price'] != "Contactez pour le prix" else "",
-            "prix_value": price_value if price_value else "",
-            "prix_dec": traitement_prix(price_value, price_quantity) if price_value else 0.00,
+            "energie": VoitureUtils.normalize_fuel(attributes.get("Enrgie", "")), # Typo "Enrgie" in original code or site? Assuming site key
+            "transmission": VoitureUtils.normalize_transmission(attributes.get("Transmission", "")),
+            "prix": price_raw,
+            "prix_unit": price_unit if price_decimal > 0 else "DA",
+            "prix_value": price_value_str,
+            "prix_dec": price_decimal,
             "etat": etat if etat else "",
             "date_crawl": datetime.now().isoformat(),
             "status": "200" if not suspicious_text else "404",

@@ -4,61 +4,18 @@ from datetime import datetime
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 from tenacity import retry, stop_after_attempt, wait_exponential
-import sys
-sys.path.insert(1, '../../../global')
-from insert_scrape import insert_data_to_es
+import sys, os
 
-def str_to_float(text):
-    try:
-        num = re.sub(r"[^\d.,]", "", text)
-        num = num.replace(",", ".")
-        return float(num)
-    except Exception:
-        return 0
-    
-def convert_transmission(text):
-    try:
-        if not text:
-            return ""
-        text_lower = text.lower()
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../../')))
+from utils.voiture import VoitureUtils
 
-        if "semi automatique" in text_lower:
-            return "Semi-Automatique"
-        elif "automatique" in text_lower or "automatic" in text_lower:
-            return "Automatique"
-        elif "manuelle" in text_lower or "manuel" in text_lower or "manual gearbox" in text_lower:
-            return "Manuelle"
-        elif "bvm" in text_lower:
-            return "Manuelle"
-        else:
-            return text
-    except Exception:
-        return ""
-
-def convert_essence(text):
-    try:
-        if not text:
-            return ""
-        text_lower = text.lower()
-
-        if "essence hybrid électrique" in text_lower:
-            return "Essence / Hybride / Electrique"
-        elif "essence hybride" in text_lower or "essence hybrid" in text_lower:
-            return "Essence / Hybride"
-        elif "essence gpl" in text_lower:
-            return "Essence / GPL"
-        elif "hybrid" in text_lower or "hybride" in text_lower:
-            return "Hybride"
-        elif "electrique" in text_lower or "electric" in text_lower:
-            return "Electrique"
-        elif "diesel" in text_lower:
-            return "Diesel"
-        elif "essence" in text_lower or "gasoline" in text_lower:
-            return "Essence"
-        else:
-            return text
-    except Exception:
-        return ""
+try:
+    sys.path.insert(1, '../../../global')
+    from insert_scrape import insert_data_to_es
+except ImportError:
+    def insert_data_to_es(data, index):
+        print(f"[Mock] Inserting data to ES index '{index}'")
 
 def save_to_json_file(data, filename=fr"voiture\easyexport\neuf\data\scraped_vehicles.json"):
     try:
@@ -110,17 +67,17 @@ async def extract_car_details(url):
         print(f"Title error: {e}")
 
     # Price extraction
-    price = ""
-    price_value = 0
+    price_raw = ""
     try:
         price_elem = soup.find(lambda tag: tag.name == "span" and "à partir de" in tag.text)
         if price_elem:
             strong_tag = price_elem.find("strong")
             if strong_tag:
-                price = strong_tag.get_text(strip=True)
-                price_value = str_to_float(price)
+                price_raw = strong_tag.get_text(strip=True)
     except Exception as e:
         print(f"Price error: {e}")
+        
+    _, price_value_str, price_decimal, _ = VoitureUtils.parse_price(price_raw)
 
     # Image extraction
     images = []
@@ -129,7 +86,7 @@ async def extract_car_details(url):
         for link in gallery_links:
             img_url = link.get("href", "")
             if img_url and "public/img/big/" in img_url:
-                images.append(img_url)
+                images.append("https://www.easyexport.fr/" + img_url)
     except Exception as e:
         print(f"Image error: {e}")
 
@@ -196,12 +153,15 @@ async def extract_car_details(url):
             description = " ".join(desc_paragraphs)
     except Exception as e:
         print(f"Description error: {e}")
+        
+    km_raw = vehicle_data.get("kilométrage", "")
+    km_val, km_unit = VoitureUtils.normalize_mileage(km_raw)
 
     # Mapping to final structure with empty strings for missing values
     vehicle_info = {
         "titre": title,
         "description": description,
-        "numero": vehicle_data.get("modèle", "").replace(" ", "_") + "_" + str(price_value),
+        "numero": vehicle_data.get("modèle", "").replace(" ", "_") + "_" + str(price_decimal),
         "date_depot": datetime.now().isoformat(),
         "site_origine": "Easyexport.fr",
         "categorie": "Automobiles & Vehicules",
@@ -212,22 +172,22 @@ async def extract_car_details(url):
         "annee": annee,
         "marque": vehicle_data.get("marque", ""),
         "model": vehicle_data.get("modèle", ""),
-        "km": vehicle_data.get("kilométrage", ""),
-        "km_unit": "KM",
+        "km": km_val,
+        "km_unit": km_unit, 
         "moteur": vehicle_data.get("motorisation", ""),
         "couleur": vehicle_data.get("couleur", ""),
         "options": options,
-        "energie": convert_essence(vehicle_data.get("motorisation", "")),
-        "transmission": convert_transmission(vehicle_data.get("transmission", "")),
-        "prix": price,
-        "prix_value": price_value,
-        "prix_dec": price_value,
+        "energie": VoitureUtils.normalize_fuel(vehicle_data.get("motorisation", "")),
+        "transmission": VoitureUtils.normalize_transmission(vehicle_data.get("transmission", "")),
+        "prix": price_raw,
+        "prix_value": price_value_str,
+        "prix_dec": price_decimal,
         "prix_unit": "€",
         "etat": "Neuf" if "neufs" in url else "Occasion",
         "date_crawl": datetime.now().isoformat(),
         "status": "200",
         "as_photo": "Avec photo" if images else "Sans photo",
-        "as_prix": "Avec prix" if price_value else "Sans prix",
+        "as_prix": "Avec prix" if price_decimal > 0 else "Sans prix",
         "wilaya": "",
         "commune": "",
     }

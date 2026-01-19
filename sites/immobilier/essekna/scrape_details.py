@@ -1,63 +1,21 @@
 import re
+import sys
+import os
 import asyncio
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 
-def str_to_float(text):
-    try:
-        num = re.sub(r"[^\d.,]", "", text)
-        num = num.replace(",", ".")
-        return float(num)
-    except Exception:
-        return ""
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
+from utils.immobilier import ImmobilierUtils
 
-def convert_property_type(raw_key):
-    valid_types = {
-        "Appartement", "Villa", "Local", "Terrain", "Studio", "Hangar",
-        "Niveau de villa", "Immeuble", "Duplex", "Carcasse", "Autre",
-        "Bungalow", "Terrain agricole", "Usine", "Chalet", "Commerce",
-        "Locaux", "Bureau", "Autres", "Salle", "Hostel", "Dortoir",
-        "Ferme", "Hotel", "Triplex", "Maison", "Pavillon", "Auberge", "Résidence"
-    }
-
-    normalization_map = {
-        "bungalow": "Bungalow",
-        "bungalows": "Bungalow",
-        "niveau": "Niveau de villa",
-        "niveau de villa": "Niveau de villa",
-        "terrain-agricole": "Terrain agricole",
-        "terrain agricole": "Terrain agricole",
-        "appartements": "Appartement",
-        "immeubles": "Immeuble",
-        "commerce, local": "Commerce",
-        "bureaux": "Bureau",
-        "ferme, terrain": "Ferme",
-        "residence": "Résidence",
-        "résidence": "Résidence"
-    }
-
-    if not raw_key or not isinstance(raw_key, str):
-        return ""
-
-    cleaned = raw_key.strip().lower()
-
-    normalized = normalization_map.get(cleaned, cleaned).capitalize()
-    if normalized in valid_types:
-        return normalized
-
-    lowered = raw_key.lower()
-    for key, value in normalization_map.items():
-        if key in lowered:
-            normalized_candidate = value
-            if normalized_candidate in valid_types:
-                return normalized_candidate
-
-    for valid in valid_types:
-        if valid.lower() in lowered:
-            return valid
-
-    return ""
+try:
+    sys.path.insert(1, '../../global')
+    from insert_scrape import insert_data_to_es
+except ImportError:
+    def insert_data_to_es(data, index):
+        print(f"[Mock] Inserting data to ES index '{index}'")
 
 def parse_address(address_text):
     parts = address_text.split(",")
@@ -153,7 +111,6 @@ async def extract_property_details(url):
                     superficie_text = m.group(1)
     
     # --- Extract Details Table ---
-    # Use a CSS selector to target the table container with multiple classes
     details_table = soup.select_one("div.details.table-responsive")
     if details_table:
         table = details_table.find("table")
@@ -167,7 +124,6 @@ async def extract_property_details(url):
                         transaction = cells[0].get_text(strip=True).lower()
                         if not superficie_text:
                             superficie_text = cells[1].get_text(strip=True)
-                        # Save the floor level directly (even if it's "0")
                         etage = cells[2].get_text(strip=True)
                         no_pieces = cells[3].get_text(strip=True)
     
@@ -190,11 +146,11 @@ async def extract_property_details(url):
                 images_list.append(src)
         images_list = list(dict.fromkeys(images_list))
     
-    superficie_val = str_to_float(superficie_text)
-    prix_dec = str_to_float(re.sub(r"[^\d.,]", "", price_text)) if price_text else 0
+    superficie_val = ImmobilierUtils.parse_float_or_none(superficie_text)
+    prix_dec = ImmobilierUtils.parse_float_or_none(re.sub(r"[^\d.,]", "", price_text)) if price_text else 0
     
     numero_full = url.rstrip("/").split("/")[-1]
-    numero = numero_full  # For Essekna URLs like .../properties/3427
+    numero = numero_full
     
     now_iso = datetime.now().isoformat()
     
@@ -207,7 +163,7 @@ async def extract_property_details(url):
         "date_depot": date_depot,
         "transaction": transaction,
         "category": "immobilier",
-        "bien": convert_property_type(titre) if titre else "",
+        "bien": ImmobilierUtils.convert_property_type(titre) if titre else "",
         "superficie": superficie_val,
         "superficie_unit": "m²",
         "no_pieces": no_pieces,
@@ -227,4 +183,5 @@ async def extract_property_details(url):
     }
     
     print("Extracted property details:", property_details)
+    insert_data_to_es(property_details, "immobilier")
     return property_details

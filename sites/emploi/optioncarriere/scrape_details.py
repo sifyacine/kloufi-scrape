@@ -1,129 +1,20 @@
 import re
+import sys
+import os
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
-import sys
-sys.path.insert(1, '../../global')
 
-def normalize_diplome(diplome):
-    mapping = {
-        "niveau secondaire": "Diplome de collège",
-        "niveau terminal": "Diplome de collège",
-        "baccalauréat": "Bac",
-        "bac +2": "Diplome universitaire",
-        "ts bac +2": "Diplome universitaire",
-        "ts bac +2 | Formation Professionnelle": "Diplôme professionnel / téchnique",
-        "licence": "Diplome universitaire",
-        "licence (lmd), bac + 3": "Diplome universitaire",
-        "licence bac + 4": "Diplome universitaire",
-        "bac + 3": "Diplome universitaire",
-        "bac+3": "Diplome universitaire",
-        "master 1": "Master",
-        "master 1, licence  bac + 4": "Diplome universitaire",
-        "master 2, ingéniorat, bac + 5": "Diplome universitaire",
-        "baster 2": "Master",
-        "ingéniorat": "Diplome universitaire",
-        "bac + 5": "Diplome universitaire",
-        "magistère bac + 7": "Diplome universitaire",
-        "doctorat": "Doctorat",
-        "certification": "Diplôme professionnel / téchnique",
-        "formation professionnelle": "Diplôme professionnel / téchnique",
-        "universitaire sans diplôme": "Diplôme professionnel / téchnique",
-        "non diplômante": None,
-        "sans diplôme": None,
-        "sans diplome": None,
-    }
-    return mapping.get(diplome.lower() if diplome else "", diplome)
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
+from utils.emploi import EmploiUtils
 
-def normalize_date(date_text):
-    """
-    Convert date text to an actual date in ISO format.
-    Handles both relative dates like "il y a 3 jours", "il y a 12 heures"
-    and actual dates like "28-04-2025 à 18:37:44".
-    """
-    if not date_text:
-        return ""
-    
-    # Normalize the text (lowercase, replace multiple spaces)
-    date_text = re.sub(r'\s+', ' ', date_text.lower().strip())
-    
-    # 1) Standard absolute date (DD-MM-YYYY)
-    std_match = re.search(r'(\d{2}-\d{2}-\d{4})', date_text)
-    if std_match:
-        try:
-            day, month, year = std_match.group(1).split('-')
-            return datetime(int(year), int(month), int(day)).strftime('%Y-%m-%d')
-        except ValueError:
-            pass  # fall back to relative parsing
-    
-    # Get "now" once
-    now = datetime.now()
-    
-    # 2) Relative patterns
-    patterns = [
-        (r'il y a (\d+)\s+an',      lambda n: now - timedelta(days=n*365)),
-        (r'il y a (\d+)\s+ans',     lambda n: now - timedelta(days=n*365)),
-        (r'il y a (\d+)\s+mois',    lambda n: now - timedelta(days=n*30)),
-        (r'il y a (\d+)\s+semaine', lambda n: now - timedelta(weeks=n)),
-        (r'il y a (\d+)\s+semaines',lambda n: now - timedelta(weeks=n)),
-        (r'il y a (\d+)\s+jour',     lambda n: now - timedelta(days=n)),
-        (r'il y a (\d+)\s+jours',    lambda n: now - timedelta(days=n)),
-        (r'il y a (\d+)\s+heure',    lambda n: now - timedelta(hours=n)),
-        (r'il y a (\d+)\s+heures',   lambda n: now - timedelta(hours=n)),
-        (r'il y a (\d+)\s+minute',   lambda n: now - timedelta(minutes=n)),
-        (r'il y a (\d+)\s+minutes',  lambda n: now - timedelta(minutes=n)),
-    ]
-    
-    for pattern, delta_fn in patterns:
-        m = re.search(pattern, date_text)
-        if m:
-            return delta_fn(int(m.group(1))).strftime('%Y-%m-%d')
-    
-    # 3) Special words
-    if "aujourd'hui" in date_text or "aujourd" in date_text:
-        return now.strftime('%Y-%m-%d')
-    if "hier" in date_text:
-        return (now - timedelta(days=1)).strftime('%Y-%m-%d')
-    
-    # If nothing matches, return original
-    return date_text
-
-def extract_diplome_from_description(description):
-    """
-    Extract diploma information from the job description.
-    """
-    # Look for mentions of diplomas in the description
-    diploma_keywords = [
-        "diplôme en", "diplôme d'", "diplôme de",
-        "titulaire d'un", "titulaire de", "titulaire du",
-        "bac +", "bac+", "licence", "master", "doctorat",
-        "formation en", "formation d'", "formation de",
-        "niveau d'étude", "niveau étude"
-    ]
-    
-    diplomes = []
-    for keyword in diploma_keywords:
-        if keyword.lower() in description.lower():
-            # Find the sentence containing the keyword
-            sentences = re.split(r'[.;\n]', description)
-            for sentence in sentences:
-                if keyword.lower() in sentence.lower():
-                    # Add this as a potential diploma requirement
-                    diplomes.append(sentence.strip())
-                    break
-    
-    # Extract specific diploma from description if found
-    diploma_pattern = r'[Tt]itulaire\s+d\'un\s+([^,\.;]+)'
-    diploma_match = re.search(diploma_pattern, description, re.IGNORECASE)
-    if diploma_match:
-        diplomes.append(diploma_match.group(1).strip())
-    
-    diploma_pattern = r'[Bb]ac\s*\+\s*(\d+)'
-    diploma_matches = re.findall(diploma_pattern, description)
-    for match in diploma_matches:
-        diplomes.append(f"Bac+{match}")
-    
-    return diplomes
+try:
+    sys.path.insert(1, '../../global')
+    from insert_scrape import insert_data_to_es
+except ImportError:
+    def insert_data_to_es(data, index):
+        print(f"[Mock] Inserting data to ES index '{index}'")
 
 async def extract_job_details(url, entry_data=None):
     """
@@ -151,7 +42,7 @@ async def extract_job_details(url, entry_data=None):
         
         # Initialize with data from the listing page if available
         job_details = {
-            "date_crawl": normalize_date(datetime.now().isoformat()),
+            "date_crawl": datetime.now().isoformat(),
             "url": url,
             "site_origine": "optioncarriere.dz",
             "titre": entry_data.get("title", "") if entry_data else "",
@@ -169,7 +60,7 @@ async def extract_job_details(url, entry_data=None):
             "adresse": entry_data.get("location", "") if entry_data else "",
             "wilaya": entry_data.get("location", "") if entry_data else "",
             "status": 200,
-            "date_verif": normalize_date(datetime.now().isoformat()),
+            "date_verif": datetime.now().isoformat(),
             "images": [],
             "as_photo": "Sans photo",
             "prix": "",
@@ -219,7 +110,7 @@ async def extract_job_details(url, entry_data=None):
             date_badge = tags_ul.find("span", class_="badge")
             if date_badge:
                 date_text = date_badge.get_text(strip=True)
-                job_details["date_depot"] = normalize_date(date_text)
+                job_details["date_depot"] = EmploiUtils.normalize_date(date_text)
         
         # Extract job description
         content_section = soup.find("section", class_="content")
@@ -242,12 +133,12 @@ async def extract_job_details(url, entry_data=None):
             job_details["description"] = description.strip()
             
             # Extract diploma information from description
-            raw_diplomes = extract_diplome_from_description(description)
+            raw_diplomes = EmploiUtils.extract_diplome_from_description(description)
             job_details["diplome_src"] = raw_diplomes
             job_details["diplome"] = [
-                normalize_diplome(item)
+                EmploiUtils.normalize_diplome(item)
                 for item in raw_diplomes
-                if normalize_diplome(item)
+                if EmploiUtils.normalize_diplome(item)
             ]
             
             # Combine title and description for broader analysis

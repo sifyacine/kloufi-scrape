@@ -1,58 +1,12 @@
+```python
 import re
 import asyncio
-from datetime import datetime
+import sys
+import os
+# Removed - using MultimediaUtils
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 
-
-def avec_sans_photo(image: str) -> str:
-    """
-    Return "Avec photo" if the image string is non-empty, otherwise "Sans photo".
-    """
-    return "Avec photo" if str(image).strip() else "Sans photo"
-
-
-def avec_sans_prix(prix_dec: str, prix_unit: str) -> str:
-    """
-    Return "Avec prix" if both price parts are provided and prix_dec is non-zero;
-    otherwise, return "Sans prix".
-    """
-    try:
-        if prix_dec and prix_unit and float(prix_dec) != 0:
-            return "Avec prix"
-    except ValueError:
-        pass
-    return "Sans prix"
-
-
-def traitement_prix(prix_dec: str, prix_unit: str) -> float:
-    """
-    Convert the price to DA based on the unit.
-    - "Millions": multiply by 10,000.
-    - "Milliards": multiply by 10,000,000.
-    - Otherwise, return the float value.
-    If any price part is missing or conversion fails, returns 0.0.
-    """
-    if prix_dec and prix_unit:
-        try:
-            value = float(prix_dec)
-        except ValueError:
-            return 0.0
-        if prix_unit == "Millions":
-            return value * 10000
-        elif prix_unit == "Milliards":
-            return value * 10000000
-        else:
-            return value
-    return 0.0
-
-
-def str_to_float(valeur: str) -> float:
-    """
-    Convert a string to a float, removing commas, spaces, and 'د.ج' or 'DA'.
-    Returns 0.0 if the string is empty or conversion fails.
-    """
-    if not valeur:
         print("Debug: str_to_float received empty value")
         return 0.0
     try:
@@ -123,6 +77,7 @@ def str_to_date(valeur: str) -> str:
 
         # Capitalize month for strptime (e.g., 'may' -> 'May')
         month = month.capitalize()
+        from datetime import datetime # Temporarily import here for this function
         current_year = datetime.now().year
         year = year if year else str(current_year)  # Use current year if not provided
 
@@ -351,17 +306,15 @@ async def extract_item_details(url: str, date_depot: str) -> dict:
         if price_text:
             break
     print(f"Debug: Extracted price_text: '{price_text}'")
-    prix_dec = str_to_float(price_text)
+    prix_dec = MultimediaUtils.str_to_float(price_text)
 
     # Extract Categories and Etat
     categories = []
     category_from_url = re.search(r'categorie/(\d+)/([^/]+)', url)
     if category_from_url:
         categories.append(category_from_url.group(2).replace('-', ' '))
-    processed_categories = [categorie(cat) for cat in categories]
-    etat = "New"  # Default to New as no explicit "Renewed" indicator in provided HTML
-    if "occasion" in titre.lower() or "used" in titre.lower():
-        etat = "Renewed"
+    processed_categories = [MultimediaUtils.normalize_categorie(cat) for cat in categories]
+    etat = MultimediaUtils.normalize_etat(titre, description_text)
 
     # Extract Description
     description_elem = soup.select_one('div.parameter div.block')
@@ -406,27 +359,11 @@ async def extract_item_details(url: str, date_depot: str) -> dict:
         return specs.get(key.lower(), default)
 
     # Extract brand from title or description
-    brand = ""
-    brand_match = re.search(r'^(APPLE|DELL|LENOVO|HP|ASUS|ACER|MSI|SONY|SAMSUNG|KONICA)', titre, re.IGNORECASE)
-    if brand_match:
-        brand = brand_match.group(1).upper()
-    else:
-        description_upper = description_text.upper()
-        for b in ["APPLE", "DELL", "LENOVO", "HP", "ASUS", "ACER", "MSI", "SONY", "SAMSUNG", "KONICA"]:
-            if b in description_upper:
-                brand = b
-                break
+    brand = MultimediaUtils.extract_brand(titre) or MultimediaUtils.extract_brand(description_text)
     print(f"Debug: Extracted brand: {brand}")
 
     # Extract model from title or description
-    model = ""
-    model_match = re.search(r'(iPhone\s+\d+\s*(?:Pro\s*Max|Pro)?|MacBook\s*\w+|PlayStation\s*\d|Galaxy\s*[A-Z]\d+|KM\d+i?\s*[A-Z\-]+)', titre, re.IGNORECASE)
-    if model_match:
-        model = model_match.group(0)
-    else:
-        model_match = re.search(r'(iPhone\s+\d+\s*(?:Pro\s*Max|Pro)?|MacBook\s*\w+|PlayStation\s*\d|Galaxy\s*[A-Z]\d+|KM\d+i?\s*[A-Z\-]+)', description_text, re.IGNORECASE)
-        if model_match:
-            model = model_match.group(0)
+    model = MultimediaUtils.extract_model(titre) or MultimediaUtils.extract_model(description_text)
     print(f"Debug: Extracted model: {model}")
 
     # Extract additional details from description
@@ -454,7 +391,7 @@ async def extract_item_details(url: str, date_depot: str) -> dict:
     print(f"Debug: Extracted adresse: {adresse}")
 
     # Parse provided date_depot
-    parsed_date_depot = str_to_date(date_depot)
+    parsed_date_depot = MultimediaUtils.str_to_date(date_depot)
     now_iso = datetime.now().strftime("%Y-%m-%d")
     if not parsed_date_depot:
         print(f"Warning: Failed to parse date_depot '{date_depot}', using {now_iso} as fallback")

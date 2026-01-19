@@ -1,17 +1,21 @@
 import re
+import sys
+import os
 import asyncio
-import json
 from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 
-def str_to_float(text):
-    try:
-        num = re.sub(r"[^\d.,]", "", text)
-        num = num.replace(",", ".")
-        return float(num)
-    except Exception:
-        return ""
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../../')))
+from utils.immobilier import ImmobilierUtils
+
+try:
+    sys.path.insert(1, '../../../global')
+    from insert_scrape import insert_data_to_es
+except ImportError:
+    def insert_data_to_es(data, index):
+        print(f"[Mock] Inserting data to ES index '{index}'")
 
 def parse_address(address_text):
     # Expected format: "Hydra, Alger, Algeria"
@@ -59,8 +63,7 @@ async def extract_property_details(url):
     soup = BeautifulSoup(result.html, "html.parser")
     
     # --- Extract Title ---
-    h1_title = soup.find("h1", class_="title title_code")
-    titre = h1_title.get_text(strip=True) if h1_title else ""
+    titre = ImmobilierUtils.extract_text_or_default(soup, "h1.title.title_code")
     
     # --- Extract Price and Published Date ---
     price_text = ""
@@ -106,10 +109,9 @@ async def extract_property_details(url):
         images_list = list(dict.fromkeys(images_list))  # Remove duplicates
     
     # --- Parse Numerical Values ---
-    prix_dec = str_to_float(price_text)
+    prix_dec = ImmobilierUtils.parse_float_or_none(price_text)
     
     # --- Add nb_pieces field (rooms) ---
-    # Since the snippet doesn't provide room info, we set it to an empty string or parse if available.
     nb_pieces = ""  # Replace with actual extraction logic if room info is present
     
     # --- Extract Property ID ---
@@ -124,9 +126,9 @@ async def extract_property_details(url):
         "date_crawl": now_iso,
         "numero": numero,
         "date_depot": date_depot,
-        "transaction": "",  # Not extracted from provided snippet
+        "transaction": ImmobilierUtils.detect_transaction_from_title(titre) or "Vente",
         "category": "immobilier",
-        "bien": titre,
+        "bien": ImmobilierUtils.convert_property_type(titre),
         "superficie": "",  # Not available in snippet
         "superficie_unit": "m²",
         "nb_pieces": nb_pieces,  # New field for rooms
@@ -146,6 +148,7 @@ async def extract_property_details(url):
     }
     
     print("Extracted property details:", property_details)
+    insert_data_to_es(property_details, "immobilier")
     return property_details
 
 

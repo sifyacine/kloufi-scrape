@@ -74,7 +74,11 @@ run "$BASE/sh/immobilier/lkeria/location.sh"        "$LOG_BASE/immobilier/lkeria
 run "$BASE/sh/immobilier/algerieannonces/vente.sh"  "$LOG_BASE/immobilier/algerieannonces/vente.log"
 run "$BASE/sh/immobilier/algerieannonces/location.sh" "$LOG_BASE/immobilier/algerieannonces/location.log"
 run "$BASE/sh/immobilier/krello.sh"                 "$LOG_BASE/immobilier/krello.log"
-run "$BASE/sh/immobilier/ouedkniss.sh"              "$LOG_BASE/immobilier/ouedkniss.log"
+run "$BASE/sh/immobilier/ouedkniss/vente-appartement.sh" "$LOG_BASE/immobilier/ouedkniss/vente-appartement.log"
+run "$BASE/sh/immobilier/ouedkniss/vente-villa.sh"       "$LOG_BASE/immobilier/ouedkniss/vente-villa.log"
+run "$BASE/sh/immobilier/ouedkniss/vente-terrain.sh"     "$LOG_BASE/immobilier/ouedkniss/vente-terrain.log"
+run "$BASE/sh/immobilier/ouedkniss/location-appartement.sh" "$LOG_BASE/immobilier/ouedkniss/location-appartement.log"
+run "$BASE/sh/immobilier/ouedkniss/location-vacances.sh" "$LOG_BASE/immobilier/ouedkniss/location-vacances.log"
 run "$BASE/sh/immobilier/residencedz/location.sh"    "$LOG_BASE/immobilier/residencedz/location.log"
 run "$BASE/sh/immobilier/residencedz/vente.sh"       "$LOG_BASE/immobilier/residencedz/vente.log"
 

@@ -4,78 +4,18 @@ from datetime import datetime
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 from tenacity import retry, stop_after_attempt, wait_exponential
-import sys
-sys.path.insert(1, '../../../global')
-from insert_scrape import insert_data_to_es
+import sys, os
 
-def str_to_float(text):
-    try:
-        num = re.sub(r"[^\d.,]", "", text)
-        num = num.replace(",", ".")
-        return float(num)
-    except Exception:
-        return 0
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
+from utils.voiture import VoitureUtils
 
-    
-def convert_essence(text):
-    try:
-        if not text:
-            return ""
-        text_lower = text.lower()
-
-        if "essence hybrid électrique" in text_lower:
-            return "Essence / Hybride / Electrique"
-        elif "essence hybride" in text_lower or "essence hybrid" in text_lower:
-            return "Essence / Hybride"
-        elif "essence gpl" in text_lower:
-            return "Essence / GPL"
-        elif "hybrid" in text_lower or "hybride" in text_lower:
-            return "Hybride"
-        elif "electrique" in text_lower or "electric" in text_lower:
-            return "Electrique"
-        elif "diesel" in text_lower:
-            return "Diesel"
-        elif "essence" in text_lower or "gasoline" in text_lower:
-            return "Essence"
-        else:
-            return text
-    except Exception:
-        return ""
-
-def save_to_json_file(data, filename=fr"voiture\autoexportmarseille\data\scraped_vehicles.json"):
-    try:
-        existing_data = []
-        try:
-            with open(filename, 'r') as f:
-                existing_data = json.load(f)
-        except FileNotFoundError:
-            pass
-
-        existing_data.append(data)
-        with open(filename, 'w') as f:
-            json.dump(existing_data, f, indent=2, ensure_ascii=False)
-        print(f"Data saved to {filename}")
-    except Exception as e:
-        print(f"Error saving data: {e}")
-
-def convert_transmission(text):
-    try:
-        if not text:
-            return ""
-        text_lower = text.lower()
-
-        if "semi automatique" in text_lower:
-            return "Semi-Automatique"
-        elif "automatique" in text_lower or "automatic" in text_lower:
-            return "Automatique"
-        elif "manuelle" in text_lower or "manuel" in text_lower or "manual gearbox" in text_lower:
-            return "Manuelle"
-        elif "bvm" in text_lower:
-            return "Manuelle"
-        else:
-            return text
-    except Exception:
-        return ""
+try:
+    sys.path.insert(1, '../../../global')
+    from insert_scrape import insert_data_to_es
+except ImportError:
+    def insert_data_to_es(data, index):
+        print(f"[Mock] there is a problem in saving data'{index}'")
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1))
 async def extract_car_details(url):
@@ -115,35 +55,9 @@ async def extract_car_details(url):
         print(f"Title is empty for URL: {url}. Retrying extraction...")
         raise Exception("Empty title encountered")
     
-
-
-    price = ""
-    price_value = 0
-    try:
-        price_elem = soup.find("div", class_="vehica-car-price")
-        if price_elem:
-            price = price_elem.get_text(strip=True)
-
-            # Remove euro sign and non-breaking spaces
-            price_cleaned = re.sub(r"[^\d.,]", "", price)
-
-            # Normalize spaces and separators
-            # First try to detect if comma is decimal or thousands separator
-            if ',' in price_cleaned and '.' in price_cleaned:
-                # Example: "12,345.67" → remove commas
-                price_cleaned = price_cleaned.replace(",", "") 
-            elif price_cleaned.count(',') == 1 and price_cleaned.count('.') == 0:
-                # Example: "12 345,67" → comma is decimal, replace with dot
-                price_cleaned = price_cleaned.replace(",", ".")
-            else:
-                # Just remove spaces and commas assuming they are thousand separators
-                price_cleaned = price_cleaned.replace(",", "").replace(" ", "")
-
-            # Final conversion
-            price_value = price_cleaned
-    except Exception as e:
-        print(f"Price error: {e}")
-
+    # Price extraction
+    price_raw = VoitureUtils.extract_text(soup, "div.vehica-car-price")
+    _, price_value_str, price_decimal, _ = VoitureUtils.parse_price(price_raw)
 
     # Image extraction: Extract images from the slider
     images = []
@@ -176,6 +90,7 @@ async def extract_car_details(url):
         print(f"Vehicle data error: {e}")
 
     # Extract Energie from the last <a class="vehica-car-feature"> element
+    # Or fallback to vehicle-data
     energie = ""
     try:
         energie_elems = soup.find_all("a", class_="vehica-car-feature")
@@ -223,15 +138,16 @@ async def extract_car_details(url):
 
     # Mapping vehicle data to final fields
     annee = vehicle_data.get("annee", "")
-    kilometrage = vehicle_data.get("kilometrage", "")
-    km_value = kilometrage  
-    km_unit = "KM"
+    
+    kilometrage_raw = vehicle_data.get("kilometrage", "")
+    km_val, km_unit = VoitureUtils.normalize_mileage(kilometrage_raw)
+
     couleur = vehicle_data.get("couleurs", vehicle_data.get("couleur", ""))
     transmission = vehicle_data.get("transmission", "")
-    # Use "mise_en_circulation" from the grid if available for date_depot
+    
     date_depot = datetime.now().isoformat()
+    
     # Expedition is kept for legacy purposes if needed
-    # Extract expedition value from vehicle_data and convert to float
     expedition = ""
     try:
         grid_elements = soup.find_all("div", class_="vehica-grid")
@@ -259,23 +175,23 @@ async def extract_car_details(url):
         "annee": annee,
         "marque": vehicle_data.get("marque", title.split()[0] if title else ""),
         "model": vehicle_data.get("modele", vehicle_data.get("model", "")),
-        "km": km_value,
-        "km_unit": km_unit,
+        "km": km_val,
+        "km_unit": km_unit, 
         "moteur": vehicle_data.get("moteur", ""),
         "couleur": couleur,
         "options": options,
-        "energie": convert_transmission(energie),
-        "transmission": convert_transmission(transmission),
-        "prix": expedition,
-        "prix_value": price_value,
-        "prix_dec": price_value,
+        "energie": VoitureUtils.normalize_fuel(energie),
+        "transmission": VoitureUtils.normalize_transmission(transmission),
+        "prix": expedition, # Mapped as requested in original file logic
+        "prix_value": price_value_str,
+        "prix_dec": price_decimal,
         "prix_unit": "€",
         "export": "true",
         "etat": vehicle_data.get("condition", "Occasion"),
         "date_crawl": datetime.now().isoformat(),
         "status": "200",
         "as_photo": "Avec photo" if images else "Sans photo",
-        "as_prix": "Avec prix" if price_value else "Sans prix",
+        "as_prix": "Avec prix" if price_value_str else "Sans prix",
         "wilaya": "",
         "commune": "",
         "tax": "HT"
@@ -288,6 +204,5 @@ async def extract_car_details(url):
             vehicle_info[key] = []
     
     print(f"Extracted data for {vehicle_info['numero']}")
-    # save_to_json_file(vehicle_info)
-    insert_data_to_es(vehicle_info, "voiture")
+    insert_data_to_es(vehicle_info, index_name="voiture")
     return vehicle_info

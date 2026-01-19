@@ -4,8 +4,18 @@ from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode, BrowserConfig
 from crawl4ai.extraction_strategy import JsonCssExtractionStrategy
 from bs4 import BeautifulSoup
 from datetime import datetime
-import sys
-sys.setrecursionlimit(10000)
+import sys, os
+
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
+from utils.voiture import VoitureUtils
+
+try:
+    sys.path.insert(1, '../../global')
+    from insert_scrape import insert_data_to_es
+except ImportError:
+    def insert_data_to_es(data, index):
+        print(f"[Mock] Inserting data to ES index '{index}'")
 
 async def scrape_main_page():
     global total_pages  # Use global variable to store total pages
@@ -103,57 +113,54 @@ async def scrape_main_page():
                 all_data.append(item)
                 
         
-        all_data = format_data(all_data)
+        format_data(all_data)
         print(f"🚗 Total cars extracted: {len(all_data)}")
-
-def traitement_prix(prix_dec, prix_unit):
-    """
-    Convert price based on unit (Millions, Milliards).
-    """
-    try:
-        prix_dec = float(prix_dec)
-        if prix_unit == "Millions":
-            return prix_dec * 1_000_000
-        elif prix_unit == "Milliards":
-            return prix_dec * 1_000_000_000
-        return prix_dec
-    except (ValueError, TypeError):
-        return 0  # Default to 0 if conversion fails
 
         
 def format_data(cars):
     cleaned_cars = []
     for car in cars:
         if 'prix' in car and 'titre' in car:
-            car['images'] = [f"http://webstar-auto.com/fr{car['images'].replace(".", "")}"]
+            # Fix image URL logic - previously it was replacing . with empty which seems wrong for extensions
+            # Assuming relative path needs domain prepended
+            img_src = car.get('images', '')
+            if img_src and not img_src.startswith('http'):
+                 img_src = f"https://www.webstar-auto.com{img_src}" # Corrected domain scheme
+            
+            car['images'] = [img_src] if img_src else []
+            
             as_photo = "Sans photo"
             if len(car['images']) > 0:
                 as_photo = "Avec photo"
                 
+            price_raw = car.get('prix', '')
+            _, price_value_str, price_decimal, price_unit = VoitureUtils.parse_price(price_raw)
+
             print("car", car)
             car_data = {
-                'images': car['images'] if car['images'] else [],
+                'images': car['images'],
                 'titre': car['titre'] if car['titre'] else "",
-                'prix': car['prix'] if car['prix'] else "",
-                "site_origine": "Tonobiles.com",
+                'prix': price_raw,
+                "site_origine": "Webstar-auto.com",
                 "url": car['url'],
-                "prix": car['prix'] if car['prix'] else "",
-                "prix_unit": "DA" if car['prix'] else "",
-                "prix_value": car['prix'],
-                "prix_dec": float(car['prix'].replace(" ", "")) if car['prix'] else 0,
-                "etat": "neuf",
+                "prix_unit": price_unit,
+                "prix_value": price_value_str,
+                "prix_dec": price_decimal,
+                "etat": "neuf", # Assuming default based on original code, but could be occasion
                 "date_crawl": datetime.now().isoformat(),
                 "status": "200",
                 "as_photo": as_photo,
                 "date_depot": datetime.now().isoformat(),
                 "category": "voiture",
+                "marque": car.get('marque', '')
             }
             cleaned_cars.append(car_data)
-            print(json.dumps(car, indent=2))
+            # print(json.dumps(car_data, indent=2))
+            insert_data_to_es(car_data, "voiture")
     
-    print(f"🚗 Total cars extracted: {len(cleaned_cars)}")
     return cleaned_cars
     
 
 # Run the extraction asynchronously
-asyncio.run(scrape_main_page())
+if __name__ == "__main__":
+    asyncio.run(scrape_main_page())

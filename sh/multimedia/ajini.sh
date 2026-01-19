@@ -1,5 +1,6 @@
 #!/bin/bash
-source /home/joaquim/kloufi-scrap/venv/bin/activate
-cd /home/joaquim/kloufi-scrap/multimedia/ajini
-python3 /home/joaquim/kloufi-scrap/multimedia/ajini/main.py
+BASE="/home/joaquim/kloufi-scrap"
+source "$BASE/venv/bin/activate"
+cd "$BASE/sites/multimedia/ajini"
+python3 main.py
 deactivate

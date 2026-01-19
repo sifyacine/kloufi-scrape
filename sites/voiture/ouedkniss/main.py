@@ -2,12 +2,24 @@
 import asyncio
 import json
 import re
+import sys
+import os
+from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 from scrape_details import scrape_single_url
 from datetime import datetime
 
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
+from scraper.proxy.proxy_sources import fetch_proxies
+from scraper.proxy.proxy_manager import ProxyManager
+from scraper.crawler.crawler_runner import crawl
+from scraper.browser.fingerprint import build_context
+from scraper.utils.logger import get_logger
+
 # ========================= CONFIG =========================
-PROXY_URL = "https://proxyium.com/"
+log = get_logger("main_scraper_voiture")
+
 TARGET_URL_BASE = "https://www.ouedkniss.com/automobiles_vehicules/"
 
 BATCH_SIZE = 10                  # Lower burst
@@ -16,18 +28,11 @@ MAX_CONCURRENT_DETAILS = 5       # Stabilize
 DELAY_BETWEEN_BATCHES = 5
 # =========================================================
 
-browser_config = BrowserConfig(
-    headless=True,
-    text_mode=False,
-    browser_type="chromium",
-    java_script_enabled=True,
-)
-
 # Queue to send URLs from listing scraper → detail workers
 url_queue = asyncio.Queue(maxsize=1000)
 
-async def listing_producer():
-    """Crawls listing pages in batches of 20 and feeds URLs into queue"""
+async def listing_producer(proxy_manager):
+    """Crawls listing pages in batches and feeds URLs into queue"""
     page = 1
     batch_count = 0
 
@@ -38,7 +43,7 @@ async def listing_producer():
         # Scrape current batch concurrently
         listing_sem = asyncio.Semaphore(MAX_CONCURRENT_LISTING)
         tasks = [
-            scrape_listing_page(p, listing_sem)
+            scrape_listing_page(p, listing_sem, proxy_manager)
             for p in range(page, page + BATCH_SIZE)
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -66,74 +71,175 @@ async def listing_producer():
         await url_queue.put(None)
     print("Producer finished. All pages crawled.")
 
-async def scrape_listing_page(page_number: int, semaphore):
+async def scrape_listing_page(page_number: int, semaphore, proxy_manager):
     async with semaphore:
         target_url = f"{TARGET_URL_BASE}{page_number}" if page_number > 1 else f"{TARGET_URL_BASE}"
-        attempt = 1
+        # append lang=fr or locale=fr parameter if supported/needed by the site, but usually cookies/localstorage do it
+        target_url += "?locale=fr"
 
+        
+        js_commands = [
+            """
+            (async () => {
+                // 1. Force French via LocalStorage and Cookies
+                localStorage.setItem('ok-auth-frame', JSON.stringify({ locale: 'fr' }));
+                document.cookie = "ok-locale=fr; domain=.ouedkniss.com; path=/; max-age=31536000";
+                
+                // 2. Click Menu if found (extra safety for language)
+                const menuBtn = document.querySelector('button[aria-label="Menu"], button[aria-label="القائمة"], button[aria-label="قائمة"]');
+                if (menuBtn) {
+                    menuBtn.click();
+                    await new Promise(r => setTimeout(r, 1000));
+                }
+                
+                // 3. Click FR button directly if visible
+                const frBtn = Array.from(document.querySelectorAll('button')).find(b => 
+                    b.textContent.trim() === 'FR' || 
+                    b.getAttribute('aria-label') === 'Français'
+                );
+                if (frBtn) {
+                    frBtn.click();
+                    await new Promise(r => setTimeout(r, 2000));
+                }
+
+                // 4. Stepped Scroll to trigger all lazy loads
+                window.scrollTo(0, 1000);
+                await new Promise(r => setTimeout(r, 1000));
+                
+                for (let i = 0; i < 15; i++) {
+                    window.scrollBy(0, 1000);
+                    await new Promise(r => setTimeout(r, 400));
+                }
+                window.scrollTo(0, document.body.scrollHeight);
+                await new Promise(r => setTimeout(r, 2000));
+            })();
+            """
+        ]
+
+        config = CrawlerRunConfig(
+            cache_mode=CacheMode.BYPASS,
+            page_timeout=60000,
+            wait_until="domcontentloaded",
+            js_code=js_commands, 
+            delay_before_return_html=5
+        )
+
+        attempt = 0
         while True:
-            print(f"--- Listing Page {page_number} - Attempt #{attempt} ---")
-            js_commands = [
-                "await new Promise(resolve => setTimeout(resolve, 10000));",
-                "localStorage.setItem('ok-auth-frame', JSON.stringify({ locale: 'fr' }));",
-                "document.cookie = 'ok-locale=fr; path=/; domain=.ouedkniss.com';",
-                "document.querySelector('button.fc-button.fc-cta-consent.fc-primary-button')?.click();",
-                f"document.getElementById('unique-form-control').value = '{target_url}{'&' if '?' in target_url else '?'}lang=fr';",
-                "document.querySelector('#web_proxy_form').submit();",
-                "await new Promise(resolve => setTimeout(resolve, 5000));",
-                "document.querySelector('button.fc-button.fc-cta-consent.fc-primary-button')?.click();",
-            ]
+            attempt += 1
+            if attempt > 5:
+                log.warning(f"Page {page_number} failed after 5 attempts. Skipping.")
+                return []
 
-            config = CrawlerRunConfig(
-                js_code=js_commands, 
-                delay_before_return_html=30,
-                page_timeout=120000,
-                wait_until="domcontentloaded"
-            )
-
-            async with AsyncWebCrawler(config=browser_config) as crawler:
+            proxy = None
+            if proxy_manager:
                 try:
-                    result = await crawler.arun(url=PROXY_URL, config=config)
-                    if not result.success:
-                        print(f"Fetch failed for Page {page_number}. Retrying...")
-                        await asyncio.sleep(12)
-                        attempt += 1
-                        continue
+                    proxy = proxy_manager.get_proxy("ouedkniss.com")
+                except Exception:
+                    log.warning("No proxies available for listing.")
 
-                    # Strategy: Extract URLs from JSON-LD
-                    matches = re.findall(r'"itemListElement":(\[.*?\])', result.html, re.DOTALL)
-                    if len(matches) >= 2:
-                        try:
-                            data = json.loads(matches[1])
-                            urls = []
-                            seen = set()
-                            for item in data:
+            context = build_context()
+
+            try:
+                log.info(f"Listing Page {page_number} (Attempt {attempt}) - Proxy: {proxy}")
+                result = await crawl(target_url, proxy, context, config=config, headless=True)
+
+                if not result.success:
+                    log.warning(f"Fetch failed for Page {page_number}. Retrying...")
+                    if proxy_manager and proxy:
+                        proxy_manager.report_failure(proxy)
+                    await asyncio.sleep(2)
+                    continue
+
+                if proxy_manager and proxy:
+                    proxy_manager.report_success(proxy)
+
+                # Strategy: Extract URLs from JSON-LD using BeautifulSoup (More Robust)
+                soup = BeautifulSoup(result.html, "html.parser")
+                urls = []
+                seen = set()
+
+                # 1. JSON-LD Extraction
+                script_tags = soup.find_all("script", type="application/ld+json")
+                for script in script_tags:
+                    if not script.string:
+                        continue
+                    try:
+                        data = json.loads(script.string)
+                        # Check if it's the ItemList
+                        if isinstance(data, dict) and (data.get("@type") == "ItemList" or "itemListElement" in data):
+                            items = data.get("itemListElement", [])
+                            for item in items:
                                 url = item.get("url")
                                 if url and url not in seen and url.startswith("http"):
                                     seen.add(url)
                                     urls.append(url)
-                            
-                            if urls:
-                                print(f"Successfully scraped {len(urls)} URLs from Page {page_number}")
-                                return urls
-                            else:
-                                # Could be real end or just dynamic load failure
-                                if attempt >= 5: # After 5 tries with successful fetch but 0 URLs, assume end
-                                    print(f"Page {page_number} seems empty after 5 attempts. Stopping.")
-                                    return []
-                                print(f"Page {page_number} returned 0 URLs. Retrying ({attempt}/5)...")
-                        except Exception as e:
-                            print(f"JSON parse error on Page {page_number}: {e}")
-                    else:
-                        print(f"Listing markers not found on Page {page_number}. Retrying...")
+                        # Sometimes it's a list of objects
+                        elif isinstance(data, list):
+                            for item in data:
+                                if isinstance(item, dict) and "itemListElement" in item:
+                                     items = item.get("itemListElement", [])
+                                     for sub_item in items:
+                                        url = sub_item.get("url")
+                                        if url and url not in seen and url.startswith("http"):
+                                            seen.add(url)
+                                            urls.append(url)
+                    except Exception as e:
+                        log.debug(f"JSON extract warning: {e}")
+
+                # 2. Fallback HTML Extraction if JSON failed or returned few results
+                if len(urls) < 5:
+                    selectors = [
+                        "a.o-announ-card-content", 
+                        "div.o-announ-card-column > a",
+                        "a.v-card",
+                        "div.announcement-card a",
+                        ".o-announ-card a"
+                    ]
+                    for sel in selectors:
+                        found = soup.select(sel)
+                        for link in found:
+                            href = link.get("href")
+                            if href:
+                                if href.startswith("/"):
+                                     if not re.search(r'/[^/]+-d\d+$', href): 
+                                         if "/automobiles_vehicules-" in href: continue
+                                     full_url = f"https://www.ouedkniss.com{href}"
+                                elif href.startswith("https://www.ouedkniss.com"):
+                                    full_url = href
+                                else:
+                                    continue
+                                
+                                if full_url not in seen:
+                                    seen.add(full_url)
+                                    urls.append(full_url)
+
+                if urls:
+                    print(f"Successfully scraped {len(urls)} URLs from Page {page_number}")
+                    return urls
+                else:
+                    # Check for "no results" markers
+                    no_results_markers = [
+                        "aucune annonce trouvée", 
+                        "aucun résultat ne correspond",
+                        "no results found"
+                    ]
+                    page_text = soup.get_text().lower()
+                    if any(marker in page_text for marker in no_results_markers):
+                        print(f"Page {page_number} seems empty (No Results). Stopping.")
+                        return []
                     
-                except Exception as e:
-                    print(f"Exception scraping Listing Page {page_number}: {e}")
+                    print(f"Page {page_number} returned 0 URLs but no empty marker. Retrying...")
+                    
+            except Exception as e:
+                log.error(f"Exception scraping Listing Page {page_number}: {e}")
+                if proxy_manager and proxy:
+                    proxy_manager.report_failure(proxy)
+                    proxy_manager.rotate("ouedkniss.com")
 
-            await asyncio.sleep(12)
-            attempt += 1
+            await asyncio.sleep(2)
 
-async def detail_worker(worker_id: int):
+async def detail_worker(worker_id: int, proxy_manager):
     """Takes URLs from queue and scrapes them immediately"""
     print(f"Detail Worker #{worker_id} started")
     while True:
@@ -145,13 +251,13 @@ async def detail_worker(worker_id: int):
 
         print(f"Worker #{worker_id} → {url}")
         try:
-            await scrape_single_url(url)  # This already saves to ES
-            print(f"Worker #{worker_id} saved to ES")
+            await scrape_single_url(url, proxy_manager)
+            print(f"Worker #{worker_id} finished {url}")
         except Exception as e:
             print(f"Worker #{worker_id} failed {url} → {e}")
         finally:
             url_queue.task_done()
-            await asyncio.sleep(0.8)  # Be gentle
+            await asyncio.sleep(0.8)
 
 async def main():
     print("OuedKniss Pipeline Scraper STARTED")
@@ -159,14 +265,20 @@ async def main():
     print("├── Concurrent listing pages:", MAX_CONCURRENT_LISTING)
     print("└── Concurrent detail scrapers:", MAX_CONCURRENT_DETAILS)
 
+    # Initialize Proxy System
+    print("Fetching proxies...")
+    proxies = await fetch_proxies()
+    print(f"Fetched {len(proxies)} proxies.")
+    proxy_manager = ProxyManager(proxies)
+
     # Start detail workers (they will wait for URLs)
     workers = [
-        asyncio.create_task(detail_worker(i+1))
+        asyncio.create_task(detail_worker(i+1, proxy_manager))
         for i in range(MAX_CONCURRENT_DETAILS)
     ]
 
     # Start the producer (crawls listing pages in batches)
-    producer = asyncio.create_task(listing_producer())
+    producer = asyncio.create_task(listing_producer(proxy_manager))
 
     # Wait for producer to finish
     await producer

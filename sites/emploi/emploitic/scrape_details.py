@@ -1,10 +1,15 @@
 import asyncio
 import json
 import re
+import sys
+import os
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode, BrowserConfig
 from datetime import datetime
-import sys
+
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
+from utils.emploi import EmploiUtils
 
 try:
     sys.path.insert(1, '../../global')
@@ -12,57 +17,6 @@ try:
 except ImportError:
     def insert_data_to_es(data, index):
         print(f"[Mock] Inserted into '{index}' -> {data['titre']}")
-
-# ====================== NORMALIZATION FUNCTIONS ======================
-
-def normalize_diplome(diplome_raw):
-    diplome = diplome_raw.strip().lower()
-    mapping = {
-        "niveau secondaire": "Diplome de collège",
-        "niveau terminal": "Bac",
-        "baccalauréat": "Bac",
-        "ts bac +2": "Diplôme professionnel / téchnique",
-        "bac +2": "Diplome universitaire",
-        "licence (lmd), bac + 3": "Diplome universitaire",
-        "licence": "Diplome universitaire",
-        "bac + 3": "Diplome universitaire",
-        "bac+3": "Diplome universitaire",
-        "master 1, licence bac + 4": "Master",
-        "master 1": "Master",
-        "licence bac + 4": "Master",
-        "master 2, ingéniorat, bac + 5": "Master",
-        "master 2": "Master",
-        "ingéniorat": "Master",
-        "bac + 5": "Master",
-        "magistère bac + 7": "Doctorat",
-        "doctorat": "Doctorat",
-        "non diplômante": None,
-        "sans diplôme": None,
-        "sans diplome": None,
-        "formation professionnelle": "Diplôme professionnel / téchnique",
-        "certification": "Diplôme professionnel / téchnique",
-        "universitaire sans diplôme": "Diplôme professionnel / téchnique",
-    }
-    return mapping.get(diplome, diplome_raw)  # return original if not in map
-
-
-def extract_wilaya(address):
-    if not address or address.lower() == "télétravail":
-        return "Télétravail"
-    parts = [p.strip() for p in address.split(',')]
-    return parts[0] if parts else "N/A"
-
-
-def extract_salary(text):
-    if not text:
-        return "", ""
-    pattern = r'(\d[\d\s]*\d?)\s*(DA|DZD|dinars?)'
-    match = re.search(pattern, text, re.IGNORECASE)
-    if match:
-        amount = re.sub(r'\s', '', match.group(1))
-        return amount, "DA"
-    return "", ""
-
 
 # ====================== MAIN SCRAPING FUNCTION ======================
 
@@ -112,7 +66,7 @@ async def scrape_single_url_with_crawl4ai_and_bs4(url, date_depot, employeur, po
 
         # Extract fields safely
         lieu_travail = criteria.get("Lieu de travail", "N/A")
-        wilaya = extract_wilaya(lieu_travail)
+        wilaya = EmploiUtils.extract_wilaya(lieu_travail)
         secteur = criteria.get("Secteur d'activité", "N/A")
         type_contrat = criteria.get("Type de contrat", "N/A")
         niveau_poste_raw = criteria.get("Niveau de poste", "N/A")
@@ -126,8 +80,8 @@ async def scrape_single_url_with_crawl4ai_and_bs4(url, date_depot, employeur, po
         # Normalize diplomas
         diplome_list_raw = [d.strip() for d in niveau_etude_raw.replace("Ou", ",").split(",") if d.strip()]
         diplome_list_normalized = [
-            normalize_diplome(d) for d in diplome_list_raw 
-            if normalize_diplome(d) is not None
+            EmploiUtils.normalize_diplome(d) for d in diplome_list_raw 
+            if EmploiUtils.normalize_diplome(d) is not None
         ]
 
         # === Description - Updated to match the new example ===
@@ -147,7 +101,7 @@ async def scrape_single_url_with_crawl4ai_and_bs4(url, date_depot, employeur, po
                 description = fallback_div.get_text(separator="\n", strip=True)
 
         # === Salary from description ===
-        salaire, unite = extract_salary(description)
+        salaire, unite = EmploiUtils.extract_salary(description)
         as_prix = "Avec prix" if salaire else "Sans prix"
 
         # === Company Logo / Sector Image ===

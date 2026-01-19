@@ -1,75 +1,25 @@
 import json
 import asyncio
+import sys
+import os
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode, BrowserConfig
 from datetime import datetime
 from urllib.parse import unquote, urljoin
-import sys
-sys.path.insert(1, '../../global')
-from insert_scrape import insert_data_to_es
 import locale
 import re
 
-def traitement_prix(prix_dec, prix_unit):
-    try:
-        if len(prix_dec):
-            if prix_unit == "Millions":
-                return float(prix_dec) * 10000, "Avec prix"
-            elif prix_unit == "Milliards":
-                return float(prix_dec) * 10000000, "Avec prix"
-            else:
-                return float(prix_dec), "Avec prix"
-        else:
-            return 0, "Sans prix"
-    except Exception as e:
-        return "", "Sans prix"
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
+from utils.immobilier import ImmobilierUtils
 
-def convert_property_type(raw_key):
-    valid_types = {
-        "Appartement", "Villa", "Local", "Terrain", "Studio", "Hangar",
-        "Niveau de villa", "Immeuble", "Duplex", "Carcasse", "Autre",
-        "Bungalow", "Terrain agricole", "Usine", "Chalet", "Commerce",
-        "Locaux", "Bureau", "Autres", "Salle", "Hostel", "Dortoir",
-        "Ferme", "Hotel", "Triplex", "Maison", "Pavillon", "Auberge", "Résidence"
-    }
+try:
+    sys.path.insert(1, '../../global')
+    from insert_scrape import insert_data_to_es
+except ImportError:
+    def insert_data_to_es(data, index):
+        print(f"[Mock] Inserting data to ES index '{index}'")
 
-    normalization_map = {
-        "bungalow": "Bungalow",
-        "bungalows": "Bungalow",
-        "niveau": "Niveau de villa",
-        "niveau de villa": "Niveau de villa",
-        "terrain-agricole": "Terrain agricole",
-        "terrain agricole": "Terrain agricole",
-        "appartements": "Appartement",
-        "immeubles": "Immeuble",
-        "commerce, local": "Commerce",
-        "bureaux": "Bureau",
-        "ferme, terrain": "Ferme",
-        "residence": "Résidence",
-        "résidence": "Résidence"
-    }
-
-    if not raw_key or not isinstance(raw_key, str):
-        return ""
-
-    cleaned = raw_key.strip().lower()
-
-    normalized = normalization_map.get(cleaned, cleaned).capitalize()
-    if normalized in valid_types:
-        return normalized
-
-    lowered = raw_key.lower()
-    for key, value in normalization_map.items():
-        if key in lowered:
-            normalized_candidate = value
-            if normalized_candidate in valid_types:
-                return normalized_candidate
-
-    for valid in valid_types:
-        if valid.lower() in lowered:
-            return valid
-
-    return ""
         
 def extract_superficie(page_text):
     match = re.search(r"(\d+(\.\d+)?)\s*(m²|m2)", page_text)
@@ -196,10 +146,16 @@ async def extract_property_details(url, item):
             price_unit = re.search(r"(Millions|Milliards)", price)
             if price_unit != None and price_unit != "":
                 price_unit = price_unit.group(0)
-                price_dec, as_price = traitement_prix(price, price_unit)
+                price_num_str = re.sub(r"[^\d.,]", "", price.replace(price_unit, "").replace("DA", ""))
+                price_dec = ImmobilierUtils.traitement_prix(price_num_str, price_unit)
+                as_price = "Avec prix"
             else:
                 price_cleaned = price.replace("DA", "").replace(" ", "").replace(".", "")
-                price_dec, as_price = traitement_prix(price_cleaned, "")
+                price_dec = ImmobilierUtils.traitement_prix(price_cleaned, "")
+                if price_dec > 0:
+                    as_price = "Avec prix"
+                else:
+                    as_price = "Sans prix"
 
         if images_element:
             images = images_element.find_all("img")
@@ -227,8 +183,8 @@ async def extract_property_details(url, item):
             "date_depot": date_depot_iso,
             'transaction': item['status'] if item['status'] else "",
             'category': "immobilier",
-            'bien': convert_property_type(item['property_type']) if item['property_type'] else "",
-            'superficie': str_to_float(surface_value) if surface_value else "",
+            'bien': ImmobilierUtils.convert_property_type(item['property_type']) if item['property_type'] else "",
+            'superficie': ImmobilierUtils.parse_float_or_none(surface_value) if surface_value else "",
             'superficie_unit': surface_unit if surface_unit else "",
             'nb_pieces': rooms if rooms else "",
             'description': description_content if description_content else "",

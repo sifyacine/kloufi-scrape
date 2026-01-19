@@ -4,7 +4,12 @@ from urllib.parse import unquote
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 import sys
+import os
 import re
+
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
+from utils.immobilier import ImmobilierUtils
 
 try:
     sys.path.insert(1, '../../global')
@@ -86,7 +91,7 @@ async def extract_property_details(url):
             trans_text = trans_span.get_text(strip=True)
             transaction = "Location" if trans_text == "À louer" else "Vente"
             bien_text = titre.replace(trans_text, "").strip()
-            bien = convert_property_type(bien_text)
+            bien = ImmobilierUtils.convert_property_type(bien_text)
 
     # --- Address ---
     address_div = soup.find("div", class_="flex items-center gap-1 lg:text-base text-sm capitalize")

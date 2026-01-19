@@ -3,23 +3,18 @@ import json
 from datetime import datetime
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
-import sys
+import sys, os
+
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
+from utils.voiture import VoitureUtils
 
 try:
     sys.path.insert(1, '../../global')
     from insert_scrape import insert_data_to_es
 except ImportError:
-
     def insert_data_to_es(data, index):
         print(f"[Mock] there is a problem in saving data'{index}'")
-
-def str_to_float(text):
-    try:
-        num = re.sub(r"[^\d.,]", "", text)
-        num = num.replace(",", ".")
-        return float(num)
-    except Exception:
-        return 0
 
 def extract_engine_size(performance_text):
     """
@@ -42,80 +37,6 @@ def extract_engine_size(performance_text):
         return cc_value / 1000.0  # Convert cc to liters
     
     return 0
-    
-def normalize_energie(value: str) -> str:
-    """
-    Normalize fuel type/energy source.
-    """
-    if not value:
-        return ""
-        
-    mapping = {
-        # Essence
-        "Essence": "Essence",
-        "Petrol": "Essence",
-        "Gasoline": "Essence",
-        "Essence, Compatible E-10": "Essence",
-
-        # Diesel
-        "Diesel": "Diesel",
-        "Diesel, Compatible E-10": "Diesel",
-
-        # GPL
-        "GPL": "GPL",
-        "GPL, Compatible E-10": "GPL",
-        "Essence / GPL": "GPL",
-
-        # Electrique
-        "Electrique": "Electrique",
-
-        # Hybride
-        "Hybride": "Hybride",
-        "Hybrid": "Hybride",
-        "Hybrid (gasoline/electric)": "Hybride",
-        "Hybride (essence/électrique)": "Hybride",
-        "Hybride (diesel/électrique)": "Hybride",
-
-        # Hybride Rechargeable
-        "Hybride (essence/électrique), Hybride rechargeable": "Hybride Rechargeable",
-        "Hybride (essence/électrique), Compatible E-10, Hybride rechargeable": "Hybride Rechargeable",
-
-        # Multi-énergie
-        "Essence / Hybride": "Multi-énergie",
-        "Essence / Hybride / Electrique": "Multi-énergie",
-
-        # Unknown entries mapped as requested
-        "energie-1": "Essence",
-        "energie-2": "Diesel",
-        "energie-3": "GPL",
-    }
-
-    return mapping.get(value.strip(), "Multi-énergie")
-    
-def normalize_transmission(value: str) -> str:
-    """
-    Normalize transmission type.
-    """
-    if not value:
-        return ""
-
-    val_upper = value.strip().upper()
-    
-    # Checking for specific keywords
-    if val_upper in ["AT", "DCT", "CVT", "E-CVT", "DHT", "AMT", "TCT", "E-CVT+AT", "ISR"]:
-        return "Automatique"
-        
-    if "SEMI" in val_upper:
-        return "Semi-Automatique"
-        
-    if "AUTOMATIQUE" in val_upper or "AUTOMATIC" in val_upper:
-        return "Automatique"
-        
-    if "MANUELLE" in val_upper or "MANUAL" in val_upper or "MÉCANIQUE" in val_upper or "MT" == val_upper:
-        return "Manuelle"
-        
-    return value.strip()
-
 
 async def extract_car_details(url):
     browser_config = BrowserConfig(
@@ -152,37 +73,22 @@ async def extract_car_details(url):
         print(f"Title error: {e}")
     
     # Price and Tax extraction
-    price = ""
-    price_value = 0
+    price_raw = ""
     tax = ""
     try:
         netto_span = soup.find("span", class_="price_netto price_small")
         brutto_span = soup.find("span", class_="price_big price_brutto")
 
         if netto_span:
-            raw_net = netto_span.get_text(separator=" ").split("€")[0]
-            digits = re.sub(r"[^\d]", "", raw_net)
-            price = digits
-            price_value = int(digits) if digits else 0
+            price_raw = netto_span.get_text(separator=" ")
             tax = "HT"
         elif brutto_span:
-            raw_gross = brutto_span.get_text(separator=" ").split("€")[0]
-            digits = re.sub(r"[^\d]", "", raw_gross)
-            price = digits
-            price_value = int(digits) if digits else 0
+            price_raw = brutto_span.get_text(separator=" ")
             tax = "TTC"
     except Exception as e:
         print(f"Price extraction error: {e}")
     
-
-    def extract_text_or_default(soup, selector, default=""):
-        """Extract text from a given selector or return a default value."""
-        element = soup.select_one(selector)
-        if element:
-            return element.get_text(strip=True)
-        else:
-            print(f"Element not found for selector: {selector}")
-            return default
+    _, price_value_str, price_decimal, _ = VoitureUtils.parse_price(price_raw)
 
     def extract_images_from_carousel(soup):
         """
@@ -241,7 +147,7 @@ async def extract_car_details(url):
 
     # Extract fuel type and engine size for filtering
     raw_fuel = vehicle_data.get("fuel", "")
-    energie = normalize_energie(raw_fuel)
+    energie = VoitureUtils.normalize_fuel(raw_fuel)
     
     raw_performance = vehicle_data.get("performance", "")
     engine_size = extract_engine_size(raw_performance)
@@ -270,26 +176,22 @@ async def extract_car_details(url):
 
     # Description extraction (not present in provided HTML)
     description = ""
+    
     raw_km = vehicle_data.get("mileage", "")
-    km = 0
-    if raw_km:
-        km_digits = re.sub(r"[^\d]", "", raw_km)
-        try:
-            km = int(km_digits)
-        except ValueError:
-            km = 0
+    km_val, km_unit = VoitureUtils.normalize_mileage(raw_km)
+
     def extract_first_registration_year(soup):
-        elem = soup.select_one("div.fact.first_registration")
-        if not elem:
-            return ""
-
-        text = elem.get_text(strip=True)
-
-        # Expect formats like "04/2025" or "2025"
-        match = re.search(r"(\d{4})", text)
-        if match:
-            return match.group(1)  # Return 2025
-
+        try:
+            elem = soup.select_one("div.fact.first_registration")
+            if not elem:
+                return ""
+            text = elem.get_text(strip=True)
+            # Expect formats like "04/2025" or "2025"
+            match = re.search(r"(\d{4})", text)
+            if match:
+                return match.group(1)  # Return 2025
+        except Exception:
+            pass
         return ""
 
     # Split title into words
@@ -302,38 +204,40 @@ async def extract_car_details(url):
         model = " ".join(words[1:3])
     elif len(words) == 2:
         model = words[1]
+    
+    annee = extract_first_registration_year(soup)
 
     # Mapping to final structure
     vehicle_info = {
         "titre": title,
         "description": description,
-        "numero": vehicle_data.get("internal_number", "").replace(" ", "_") + "_" + str(price_value),
+        "numero": vehicle_data.get("internal_number", "").replace(" ", "_") + "_" + str(price_decimal),
         "date_depot": datetime.now().isoformat(),
         "site_origine": "Dickreich.com",
         "categorie": "Automobiles & Vehicules",
         "category": "voiture",
         "images": images,
         "url": url,
-        "annee": extract_first_registration_year(soup),
+        "annee": annee,
         "marque": marque,  
         "model": model,  
-        "km": km,
-        "km_unit": "KM",
+        "km": km_val,
+        "km_unit": km_unit,
         "moteur": raw_performance,
         "couleur": vehicle_data.get("manufacturer_color", ""),
         "options": options,
         "energie": energie,
-        "transmission": normalize_transmission(vehicle_data.get("gearbox", "")),
-        "prix": price,
-        "prix_value": price_value,
-        "prix_dec": price_value,
+        "transmission": VoitureUtils.normalize_transmission(vehicle_data.get("gearbox", "")),
+        "prix": price_raw.strip(),
+        "prix_value": price_value_str,
+        "prix_dec": price_decimal,
         "prix_unit": "€",
         "tax": tax,
         "etat": "Neuf" if "neuf" in title.lower() else "Occasion",
         "date_crawl": datetime.now().isoformat(),
         "status": "200",
         "as_photo": "Avec photo" if images else "Sans photo",
-        "as_prix": "Avec prix" if price_value else "Sans prix",
+        "as_prix": "Avec prix" if price_decimal > 0 else "Sans prix",
         "wilaya": "",
         "commune": "",
         "engine_size_liters": engine_size,  # Added for reference
@@ -346,6 +250,6 @@ async def extract_car_details(url):
         elif isinstance(vehicle_info[key], list) and not vehicle_info[key]:
             vehicle_info[key] = []
     
-    print(f"✅ ACCEPTED: {vehicle_info['numero']} - {energie} {engine_size}L - {km} km- {vehicle_info['annee']}")
-    insert_data_to_es(vehicle_info, "voiture")
+    print(f"✅ ACCEPTED: {vehicle_info['numero']} - {energie} {engine_size}L - {km_val} km - {vehicle_info['annee']}")
+    insert_data_to_es(vehicle_info, index_name="voiture")
     return vehicle_info

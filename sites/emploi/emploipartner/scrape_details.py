@@ -1,9 +1,14 @@
 import re
+import sys
+import os
 from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode, BrowserConfig
 from bs4 import BeautifulSoup
 from datetime import datetime, timedelta
-import sys
 import json
+
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
+from utils.emploi import EmploiUtils
 
 try:
     sys.path.insert(1, '../../global')
@@ -12,9 +17,9 @@ except ImportError:
     def insert_data_to_es(data, index):
         print(f"[Mock] Inserted into '{index}' -> {data['titre']}")
 
-# ====================== NORMALIZATION FUNCTIONS ======================
+# ====================== SITE-SPECIFIC HELPER FUNCTIONS ======================
 
-def parse_relative_date(date_str):
+def parse_relative_date_with_hours(date_str):
     """Convert 'il y a environ 2 heures' → '2025-12-17'"""
     date_str = date_str.strip().lower()
     if "il y a" not in date_str:
@@ -42,56 +47,6 @@ def parse_relative_date(date_str):
     
     past_date = now - deltas.get(unit, timedelta(days=0))
     return past_date.strftime('%Y-%m-%d')
-
-
-def normalize_diplome(diplome_raw):
-    """Comprehensive normalization for Algerian diplomas on emploipartner"""
-    if not diplome_raw:
-        return None
-
-    diplome = diplome_raw.strip().lower()
-    diplome = re.sub(r'\s+', ' ', diplome)
-    diplome = diplome.replace("é", "e").replace("è", "e")
-
-    mapping = {
-        # Bac and below
-        "bac": "Bac",
-        "baccalaureat": "Bac",
-        "bac +0": "Bac",
-        "niveau bac": "Bac",
-
-        # Bac +2 / Technical
-        "bac +2": "Diplome universitaire",
-        "bac+2": "Diplome universitaire",
-        "ts": "Diplome professionnel / technique",
-        "technicien superieur": "Diplome professionnel / technique",
-        "bts": "Diplome professionnel / technique",
-        "dut": "Diplome universitaire",
-
-        # Bac +3 / Licence
-        "bac +3": "Diplome universitaire",
-        "bac+3": "Diplome universitaire",
-        "licence": "Diplome universitaire",
-
-        # Master / Engineer
-        "bac +5": "Master",
-        "bac+5": "Master",
-        "master": "Master",
-        "ingenieur": "Master",
-        "ingeniorat": "Master",
-
-        # No diploma
-        "indifferent": None,
-        "sans diplome": None,
-        "sans diplôme": None,
-        "niveau indifferent": None,
-
-        # Professional training
-        "formation professionnelle": "Diplome professionnel / technique",
-        "certificat": "Diplome professionnel / technique",
-    }
-
-    return mapping.get(diplome, diplome_raw)
 
 
 def normalize_niveau_experience(exp_raw):
@@ -225,7 +180,10 @@ def extract_date_depot(soup):
     for div in date_divs:
         text = div.get_text(strip=True)
         if "il y a" in text.lower():
-            date_depot = parse_relative_date(text)
+            # Try site-specific parser first (handles hours), fallback to EmploiUtils
+            date_depot = parse_relative_date_with_hours(text)
+            if date_depot == "N/A":
+                date_depot = EmploiUtils.normalize_date(text)
             break
     
     return date_depot

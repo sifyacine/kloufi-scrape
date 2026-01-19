@@ -7,7 +7,10 @@ from bs4 import BeautifulSoup
 
 from core.base_scraper import BaseScraper
 from core.utils import save_data
-from utils import VehicleUtils
+
+# Use the new consolidated utils
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
+from utils.voiture import VoitureUtils
 
 
 try:
@@ -228,85 +231,63 @@ class MobileScraper(BaseScraper):
         soup = BeautifulSoup(html_content, "html.parser")
 
         # ---------------- TITLE ----------------
+        title_candidates = [
+            ("h2", "typography_headline__yJCAO"),
+            ("div", "MainCtaBox_subTitle__wYybO margin_bottom_M__i_w26 typography_copyLarge__6DZQb"),
+            ("h1", None)
+        ]
+        
         title = ""
-
-        # Primary selector - h2 with typography_headline__yJCAO class
-        h2_title = soup.find("h2", class_="typography_headline__yJCAO")
-        if h2_title:
-            title = h2_title.get_text(strip=True)
-
-        # Fallback to old selector
-        if not title:
-            title_el = soup.find(
-                "div",
-                class_="MainCtaBox_subTitle__wYybO margin_bottom_M__i_w26 typography_copyLarge__6DZQb"
-            )
-            if title_el:
-                title = title_el.get_text(strip=True)
-
-        # Last fallback
-        if not title:
-            fallback = soup.find("h1")
-            if fallback:
-                title = fallback.get_text(strip=True)
+        for tag, class_name in title_candidates:
+            if class_name:
+                el = soup.find(tag, class_=class_name)
+            else:
+                el = soup.find(tag)
+            
+            if el:
+                title = el.get_text(strip=True)
+                break
 
 
-                def extract_price_block(soup):
-                    """
-                    Robustly extract old_price and current price.
-                    Returns both as digit-only strings (e.g. "17000", "20000").
-                    Tries to avoid taking both old+new concatenated from a single block.
-                    """
-                    old_price = ""
-                    price = ""
-
-                    # Try to find an element that clearly represents the old price
-                    old_el = soup.find(attrs={"class": re.compile(r"oldPrice", re.I)})
-                    if old_el:
-                        old_text = old_el.get_text(strip=True)
-                        old_price = re.sub(r"[^\d]", "", old_text)
-
-                    # Try to find the "main" / current price element(s)
-                    candidates = soup.find_all(attrs={"class": re.compile(r"mainPrice|MainPriceArea_mainPrice|main-price", re.I)})
-                    for c in candidates:
-                        # If this candidate contains the old-price element (as a child), remove the old-child text
-                        child_old = c.find(attrs={"class": re.compile(r"oldPrice", re.I)})
-                        if child_old:
-                            # Remove the exact old-child text from the candidate's text to avoid concatenation
-                            candidate_text = c.get_text(separator=' ', strip=True)
-                            child_text = child_old.get_text(strip=True)
-                            # Safely remove the child text once
-                            new_text = candidate_text.replace(child_text, "", 1).strip()
-                            if new_text:
-                                price = re.sub(r"[^\d]", "", new_text)
-                                break
-                            # otherwise continue searching other candidates
-                        else:
-                            # No old-child inside candidate, use this candidate's text
-                            candidate_text = c.get_text(separator=' ', strip=True)
-                            price = re.sub(r"[^\d]", "", candidate_text)
-                            break
-
-                    # Final fallback - search any text node that looks like a price (e.g. "17 000 €" or "17000€")
-                    if not price:
-                        price_text_node = soup.find(text=re.compile(r"\d[\d\s\u00A0]*€"))
-                        if price_text_node:
-                            price = re.sub(r"[^\d]", "", price_text_node)
-
-                    return old_price, price
-
-
-
-                old_price, price = extract_price_block(soup)
-
-        # Convert price value for numeric comparison (safe)
-        price_digits = re.sub(r"[^\d]", "", price or "")
-        price_numeric = int(price_digits) if price_digits.isdigit() else 0
-
-        # Keep a formatted price string for storage (if you want separators, format here)
-        # e.g., store as a simple digits-only string to avoid accidental concatenation elsewhere:
-        price_str = price_digits
-
+        # ---------------- PRICE ----------------
+        # Use VoitureUtils.parse_price with some cleaning
+        # Mobile.de structure can be complex, often has oldPrice and mainPrice
+        
+        old_price = ""
+        price = ""
+        
+        # Try to find old price
+        old_el = soup.find(attrs={"class": re.compile(r"oldPrice", re.I)})
+        if old_el:
+            old_price_text = old_el.get_text(strip=True)
+            old_price = re.sub(r"[^\d]", "", old_price_text)
+            
+        # Try to find current price
+        # Extract main price block
+        # The logic from before was robust, let's keep a simplified version leveraging Utils if possible
+        # But Mobile.de specific DOM navigation is safer to keep somewhat custom for extraction before parsing
+        candidates = soup.find_all(attrs={"class": re.compile(r"mainPrice|MainPriceArea_mainPrice|main-price", re.I)})
+        price_text = ""
+        for c in candidates:
+             # If child old price exists, remove it
+             child_old = c.find(attrs={"class": re.compile(r"oldPrice", re.I)})
+             if child_old:
+                 c_text = c.get_text(separator=' ', strip=True)
+                 child_text = child_old.get_text(strip=True)
+                 price_text = c_text.replace(child_text, "", 1).strip()
+                 if price_text: break
+             else:
+                 price_text = c.get_text(strip=True)
+                 if price_text: break
+        
+        if not price_text:
+             price_node = soup.find(text=re.compile(r"\d[\d\s\u00A0]*€"))
+             if price_node:
+                 price_text = price_node
+        
+        # Now use Utils for parsing
+        _, price_val_str, price_decimal, _ = VoitureUtils.parse_price(price_text)
+        
         # ---------------- IMAGES ----------------
         images = []
         # Target the thumbnail items that contain the actual image data
@@ -379,10 +360,9 @@ class MobileScraper(BaseScraper):
 
         # ---------------- SPECIFIC FIELDS ----------------
         annee = vehicle_data.get('date_immatriculation', '').split('/')[-1] or ""
-
+        
         raw_km = vehicle_data.get('kilométrage', '')
-        km_digits = re.sub(r"[^\d]", "", raw_km)
-        km = int(km_digits) if km_digits.isdigit() else 0
+        km_val, km_unit = VoitureUtils.normalize_mileage(raw_km)
 
         # Marque / Model from title
         words = title.split()
@@ -397,8 +377,8 @@ class MobileScraper(BaseScraper):
                 ref_id = match.group(1)
 
         numero = (
-            f"{ref_id}_{price}"
-            if ref_id else f"{marque}_{model}_{price}".replace(" ", "_")
+            f"{ref_id}_{price_val_str}"
+            if ref_id else f"{marque}_{model}_{price_val_str}".replace(" ", "_")
         )
 
         # ---------------- OTHER INFORMATION (unmapped fields) ----------------
@@ -431,38 +411,36 @@ class MobileScraper(BaseScraper):
             "annee": annee,
             "marque": marque,
             "model": model,
-            "km": str(km),
-            "energie": vehicle_data.get('carburant', ''),
-            "transmission": vehicle_data.get('transmission', ''),
+            "km": km_val,
+            "km_unit": km_unit,
+            "energie": VoitureUtils.normalize_fuel(vehicle_data.get('carburant', '')),
+            "transmission": VoitureUtils.normalize_transmission(vehicle_data.get('transmission', '')),
             "couleur": vehicle_data.get('couleur', ''),
             "moteur": vehicle_data.get('puissance', ''),
-            "prix": price_str,
-            "prix_value": price_numeric,
+            "prix": price_text, # Keep original string 
+            "prix_value": price_val_str,
+            "prix_dec": price_decimal,
             "old_price": old_price,
             "prix_unit": "€",
             "etat": vehicle_data.get('état_du_véhicule', 'Occasion').split(',')[0].strip(),
             "wilaya": "",
             "commune": "",
+            "category": "voiture",
+            "categorie": "Automobiles & Vehicules",
+            "status": "200",
+            "as_photo": "Avec photo" if images else "Sans photo",
+            "as_prix": "Avec prix" if price_decimal > 0 else "Sans prix",
             "tax": "",
             "export": "true",
             "other_information": other_information,
         }
 
-        unified = VehicleUtils.unify_data(raw_data)
-
-        unified.update({
-            "numero": numero,
-            "category": "voiture",
-            "categorie": "Automobiles & Vehicules",
-            "status": "200",
-            "as_photo": "Avec photo" if images else "Sans photo",
-            "as_prix": "Avec prix" if price_numeric > 0 else "Sans prix",
-            "tax": "",
-            "export": "true",
-            "other_information": other_information,
-        })
-
-        return unified
+        # unified = VehicleUtils.unify_data(raw_data) # Removed dependency on VehicleUtils, we are doing it here
+        # Actually, `VehicleUtils.unify_data` might be doing something specific? 
+        # But per instruction, we are unifying utilities. `VoitureUtils` now covers normalization.
+        # The structure above `raw_data` is already quite unified.
+        
+        return raw_data
 
     # ============================================================
     # RUN

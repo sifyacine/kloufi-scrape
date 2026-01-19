@@ -1,5 +1,6 @@
 #!/bin/bash
-source /home/joaquim/kloufi-scrap/venv/bin/activate
-cd /home/joaquim/kloufi-scrap/immobilier/essekna
-python3 /home/joaquim/kloufi-scrap/immobilier/essekna/main.py
+BASE="/home/joaquim/kloufi-scrap"
+source "$BASE/venv/bin/activate"
+cd "$BASE/sites/immobilier/essekna"
+python3 main.py
 deactivate

@@ -1,5 +1,6 @@
 #!/bin/bash
-source /home/joaquim/kloufi-scrap/venv/bin/activate
-cd /home/joaquim/kloufi-scrap/voiture/autobessah
-python3 /home/joaquim/kloufi-scrap/voiture/autobessah/main.py
+BASE="/home/joaquim/kloufi-scrap"
+source "$BASE/venv/bin/activate"
+cd "$BASE/sites/voiture/autobessah"
+python3 main.py
 deactivate

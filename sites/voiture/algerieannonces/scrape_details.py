@@ -3,49 +3,24 @@ import json
 from datetime import datetime
 from time import sleep
 from urllib.parse import urljoin
+import sys, os
+
+# Add project root to path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
 
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 from tenacity import retry, stop_after_attempt, wait_exponential
-import sys
-sys.path.insert(1, '../../global')
-from insert_scrape import insert_data_to_es
+from utils.voiture import VoitureUtils
+
+try:
+    sys.path.insert(1, '../../global')
+    from insert_scrape import insert_data_to_es
+except ImportError:
+    def insert_data_to_es(data, index):
+        print(f"[Mock] there is a problem in saving data'{index}'")
 
 BASE_URL = "https://www.algerieannonces.com/"
-
-def str_to_float(text):
-    """Convert a string price to a float, handling commas and non-numeric characters."""
-    try:
-        num = re.sub(r"[^\d.,]", "", text)
-        num = num.replace(",", ".")
-        return float(num)
-    except Exception:
-        return 0
-    
-def convert_essence(text):
-    try:
-        if not text:
-            return ""
-        text_lower = text.lower()
-
-        if "essence hybrid électrique" in text_lower:
-            return "Essence / Hybride / Electrique"
-        elif "essence hybride" in text_lower or "essence hybrid" in text_lower:
-            return "Essence / Hybride"
-        elif "essence gpl" in text_lower:
-            return "Essence / GPL"
-        elif "hybrid" in text_lower or "hybride" in text_lower:
-            return "Hybride"
-        elif "electrique" in text_lower or "electric" in text_lower:
-            return "Electrique"
-        elif "diesel" in text_lower:
-            return "Diesel"
-        elif "essence" in text_lower or "gasoline" in text_lower:
-            return "Essence"
-        else:
-            return text
-    except Exception:
-        return ""
 
 def save_to_json_file(data, filename=fr"voiture\algerieannonces\data\scraped_vehicles.json"):
     """Append data to a JSON file."""
@@ -68,7 +43,7 @@ def extract_model(title, brand):
         return ""
     words = title.split()
     try:
-        idx = words.index(brand)
+        idx = [w.lower() for w in words].index(brand.lower())
         return words[idx+1] if idx+1 < len(words) else ""
     except ValueError:
         return ""
@@ -100,12 +75,43 @@ async def extract_car_details(url):
     soup = BeautifulSoup(result.html, "html.parser")
 
     # --- title & price ---
-    title_el = soup.select_one("div.description h1")
-    title = title_el.get_text(strip=True) if title_el else ""
-
-    price_el = soup.select_one("div.description strong.price span")
-    price = price_el.get_text(strip=True) if price_el else ""
-    price_value = str_to_float(price)
+    title = VoitureUtils.extract_text(soup, "div.description h1")
+    
+    price_raw = VoitureUtils.extract_text(soup, "div.description strong.price span")
+    # AlgerieAnnonces prices are usually "260 Millions" or just numbers.
+    # parse_price handles "Millions" if present in the value string or separate unit.
+    # Here the unit might be part of the string or missing.
+    # VoitureUtils.parse_price splits alpha from numeric if unit arg is None.
+    # But wait, my parse_price implementation expects unit locally or assumes DA.
+    # Let's check AlgerieAnnonces price format. It's often "180 Millions offert" or "245 Millions negociable".
+    # I should pass the whole string to parse_price logic?
+    # My current `parse_price` splits numbers and cleans them. It takes `unit_raw`.
+    # Let's just use `parse_price(price_raw)` and let it extract.
+    # Actually `parse_price` as implemented expects `price_raw` to be the numeric part mostly, but it cleans non-numerics.
+    # If I pass "240 Millions", `price_val_str` becomes "240". 
+    # `unit_raw` is None, so it checks `DA`.
+    # Wait, `VoitureUtils.parse_price` implementation logic:
+    # if unit_raw is passed, it uses it. If not, it defaults to DA.
+    # It does NOT extract unit from `price_raw` automatically in the current implementation.
+    # I should verify `VoitureUtils.parse_price` again.
+    # "if "million" in unit_clean: conversion = 10000".
+    # It relies on `unit_raw`.
+    # So for AlgerieAnnonces, I effectively need to split it if the text contains the unit.
+    
+    price_val_str = ""
+    price_unit = ""
+    price_decimal = 0
+    
+    if price_raw:
+        # Simple heuristic for AlgerieAnnonces
+        # "240 Millions" -> val=240, unit=Millions
+        match = re.search(r'([\d.,]+)\s*([a-zA-Z]+)', price_raw)
+        if match:
+            raw_val = match.group(1)
+            raw_unit = match.group(2)
+            _, price_val_str, price_decimal, price_unit = VoitureUtils.parse_price(raw_val, raw_unit)
+        else:
+            _, price_val_str, price_decimal, price_unit = VoitureUtils.parse_price(price_raw)
 
     # --- images gallery (full URLs) ---
     images = []
@@ -113,7 +119,7 @@ async def extract_car_details(url):
         href = a.get("href")
         if href:
             images.append(urljoin(BASE_URL, href))
-
+            
     # --- vehicle properties: marque & modèle ---
     vehicle_data = {}
     for li in soup.select(".parameter ul.info li.label"):
@@ -133,18 +139,22 @@ async def extract_car_details(url):
     wilaya = commune = date_depot = ""
     info_lis = soup.select("ul.info-holder li")
     if info_lis:
-        # 1st <li>: "Oum El Bouaghi / Ain babouche"
         first = info_lis[0].get_text(strip=True)
         if "/" in first:
             w, c = first.split("/", 1)
             wilaya, commune = w.strip(), c.strip()
 
-        # 2nd <li>: "Publiée le: 2 Apr-10:30"
         if len(info_lis) > 1:
             second = info_lis[1].get_text(" ", strip=True)
             m = re.search(r"Publiée le[:\s]+([\d]{1,2}\s+\w+)", second)
             if m:
-                date_depot = m.group(1)
+                # Need to convert this date format "2 Apr-10:30" to ISO?
+                # VoitureUtils.parse_date handles standard patterns. This one is tricky.
+                # "2 Apr-10:30" implies current year?
+                # I'll force it to ISO if possible, or leave as is if not critical normalization yet.
+                # Using `parse_date` might fail. 
+                # Let's leave it as string for now if it fails, or try to init with current year.
+                date_depot = m.group(1) 
 
     # --- annonce number ---
     numero = ""
@@ -165,11 +175,16 @@ async def extract_car_details(url):
     model = extract_model(title, marque) or vehicle_data.get("modèle", "")
 
     # --- assemble final dict ---
+    
+    # Normalize Mileage
+    km_raw = vehicle_data.get("kilométrage", "")
+    km_val, km_unit = VoitureUtils.normalize_mileage(km_raw)
+
     vehicle_info = {
         "titre": title,
         "description": description,
         "numero": numero,
-        "date_depot": datetime.now().isoformat() if date_depot == "" else date_depot,
+        "date_depot": datetime.now().isoformat() if not date_depot else date_depot, # TODO: improve date parsing for this specific format in Utils later
         "date_crawl": datetime.now().isoformat(),
         "site_origine": "Algerieannonces.com",
         "categorie": "Automobiles & Vehicules",
@@ -180,21 +195,21 @@ async def extract_car_details(url):
         "annee": vehicle_data.get("année", ""),
         "marque": marque,
         "model": model,
-        "km": vehicle_data.get("kilométrage", ""),
-        "km_unit": "KM",
+        "km": km_val,
+        "km_unit": km_unit,
         "moteur": vehicle_data.get("puissance", ""),
         "couleur": vehicle_data.get("couleur", ""),
-        "options": [],  # no explicit options list
-        "energie": convert_essence(vehicle_data.get("carburant", "")),
-        "transmission": "",
-        "prix": price,
-        "prix_value": price_value,
-        "prix_dec": price_value,
-        "prix_unit": "DA",
+        "options": [],
+        "energie": VoitureUtils.normalize_fuel(vehicle_data.get("carburant", "")),
+        "transmission": VoitureUtils.normalize_transmission(vehicle_data.get("boite de vitesse", "")), # Assuming key might be 'boite de vitesse'
+        "prix": price_raw,
+        "prix_value": price_val_str,
+        "prix_dec": price_decimal,
+        "prix_unit": price_unit if price_unit else "DA",
         "etat": "Inconnu",
         "status": "200",
         "as_photo": "Avec photo" if images else "Sans photo",
-        "as_prix": "Avec prix" if price_value else "Sans prix",
+        "as_prix": "Avec prix" if price_val_str else "Sans prix",
         "wilaya": wilaya,
         "commune": commune,
     }
