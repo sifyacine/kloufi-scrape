@@ -74,13 +74,17 @@ run "$BASE/sh/immobilier/lkeria/location.sh"        "$LOG_BASE/immobilier/lkeria
 run "$BASE/sh/immobilier/algerieannonces/vente.sh"  "$LOG_BASE/immobilier/algerieannonces/vente.log"
 run "$BASE/sh/immobilier/algerieannonces/location.sh" "$LOG_BASE/immobilier/algerieannonces/location.log"
 run "$BASE/sh/immobilier/krello.sh"                 "$LOG_BASE/immobilier/krello.log"
+run "$BASE/sh/immobilier/essekna.sh"                 "$LOG_BASE/immobilier/essekna.log"
+run "$BASE/sh/immobilier/hebdoimmobilier-dz.sh"      "$LOG_BASE/immobilier/hebdoimmobilier-dz.log"
+run "$BASE/sh/immobilier/algeriahome/vente.sh"       "$LOG_BASE/immobilier/algeriahome/vente.log"
+run "$BASE/sh/immobilier/algeriahome/location.sh"    "$LOG_BASE/immobilier/algeriahome/location.log"
+run "$BASE/sh/immobilier/residencedz/location.sh"    "$LOG_BASE/immobilier/residencedz/location.log"
+run "$BASE/sh/immobilier/residencedz/vente.sh"       "$LOG_BASE/immobilier/residencedz/vente.log"
 run "$BASE/sh/immobilier/ouedkniss/vente-appartement.sh" "$LOG_BASE/immobilier/ouedkniss/vente-appartement.log"
 run "$BASE/sh/immobilier/ouedkniss/vente-villa.sh"       "$LOG_BASE/immobilier/ouedkniss/vente-villa.log"
 run "$BASE/sh/immobilier/ouedkniss/vente-terrain.sh"     "$LOG_BASE/immobilier/ouedkniss/vente-terrain.log"
 run "$BASE/sh/immobilier/ouedkniss/location-appartement.sh" "$LOG_BASE/immobilier/ouedkniss/location-appartement.log"
 run "$BASE/sh/immobilier/ouedkniss/location-vacances.sh" "$LOG_BASE/immobilier/ouedkniss/location-vacances.log"
-run "$BASE/sh/immobilier/residencedz/location.sh"    "$LOG_BASE/immobilier/residencedz/location.log"
-run "$BASE/sh/immobilier/residencedz/vente.sh"       "$LOG_BASE/immobilier/residencedz/vente.log"
 
 
 ###############################################################################
@@ -97,7 +101,8 @@ run "$BASE/sh/voiture/easyexport-neuf.sh"           "$LOG_BASE/voiture/easyexpor
 run "$BASE/sh/voiture/easyexport-occasion.sh"       "$LOG_BASE/voiture/easyexport-occasion.log"
 run "$BASE/sh/voiture/algerieannonces.sh"           "$LOG_BASE/voiture/algerieannonces.log"
 run "$BASE/sh/voiture/autocango.sh"                 "$LOG_BASE/voiture/autocango.log"
-run "$BASE/sh/voiture/mobile.sh"                    "$LOG_BASE/voiture/mobile.log"
+run "$BASE/sh/voiture/automobile.sh"                "$LOG_BASE/voiture/automobile.log"
+run "$BASE/sh/voiture/webstar-auto.sh"              "$LOG_BASE/voiture/webstar-auto.log"
 
 ###############################################################################
 # EMPLOI
@@ -107,6 +112,10 @@ run "$BASE/sh/emploi/emploitic.sh"                  "$LOG_BASE/emploi/emploitic.
 run "$BASE/sh/emploi/ouedkniss-offres.sh"           "$LOG_BASE/emploi/ouedkniss-offres.log"
 run "$BASE/sh/emploi/ouedkniss-demandes.sh"         "$LOG_BASE/emploi/ouedkniss-demandes.log"
 run "$BASE/sh/emploi/emploipartner.sh"              "$LOG_BASE/emploi/emploipartner.log"
+run "$BASE/sh/emploi/algerieannonces.sh"           "$LOG_BASE/emploi/algerieannonces.log"
+run "$BASE/sh/emploi/cvya.sh"                       "$LOG_BASE/emploi/cvya.log"
+run "$BASE/sh/emploi/halkorb-rh.sh"                 "$LOG_BASE/emploi/halkorb-rh.log"
+run "$BASE/sh/emploi/optioncarriere.sh"             "$LOG_BASE/emploi/optioncarriere.log"
 
 ###############################################################################
 # ELECTROMENAGER
@@ -115,6 +124,8 @@ run "$BASE/sh/electromenager/homecenterdz.sh"       "$LOG_BASE/electromenager/ho
 run "$BASE/sh/electromenager/starmania.sh"          "$LOG_BASE/electromenager/starmania.log"
 run "$BASE/sh/electromenager/websoog.sh"            "$LOG_BASE/electromenager/websoog.log"
 run "$BASE/sh/electromenager/jumia.sh"              "$LOG_BASE/electromenager/jumia.log"
+run "$BASE/sh/electromenager/diardzair.sh"           "$LOG_BASE/electromenager/diardzair.log"
+run "$BASE/sh/electromenager/webstar-electro.sh"     "$LOG_BASE/electromenager/webstar-electro.log"
 
 ###############################################################################
 # MULTIMEDIA
@@ -122,6 +133,11 @@ run "$BASE/sh/electromenager/jumia.sh"              "$LOG_BASE/electromenager/ju
 run "$BASE/sh/multimedia/jumia-laptops.sh"          "$LOG_BASE/multimedia/jumia-laptops.log"
 run "$BASE/sh/multimedia/jumia.sh"                  "$LOG_BASE/multimedia/jumia.log"
 run "$BASE/sh/multimedia/ajini.sh"                  "$LOG_BASE/multimedia/ajini.log"
+run "$BASE/sh/multimedia/informatics.sh"            "$LOG_BASE/multimedia/informatics.log"
+run "$BASE/sh/multimedia/starmania.sh"              "$LOG_BASE/multimedia/starmania.log"
+run "$BASE/sh/multimedia/webstar-electro.sh"        "$LOG_BASE/multimedia/webstar-electro.log"
+run "$BASE/sh/multimedia/algerieannonces.sh"        "$LOG_BASE/multimedia/algerieannonces.log"
+run "$BASE/sh/multimedia/homecenterdz.sh"           "$LOG_BASE/multimedia/homecenterdz.log"
 
 ###############################################################################
 # WAIT

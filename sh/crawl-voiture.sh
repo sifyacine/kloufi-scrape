@@ -10,5 +10,5 @@ bash /home/joaquim/kloufi-scrap/sh/voiture/easyexport-neuf.sh >> /home/joaquim/k
 bash /home/joaquim/kloufi-scrap/sh/voiture/easyexport-occasion.sh >> /home/joaquim/kloufi-scrap/logs/voiture/easyexport-occasion.log 2>&1
 bash /home/joaquim/kloufi-scrap/sh/voiture/algerieannonces.sh >> /home/joaquim/kloufi-scrap/logs/voiture/algerieannonces.log 2>&1
 bash /home/joaquim/kloufi-scrap/sh/voiture/autocango.sh >> /home/joaquim/kloufi-scrap/logs/voiture/autocango.log 2>&1
-bash /home/joaquim/kloufi-scrap/sh/voiture/automobile-diesel.sh >> /home/joaquim/kloufi-scrap/logs/voiture/automobile-diesel.log 2>&1
-bash /home/joaquim/kloufi-scrap/sh/voiture//automobile-gasoline.sh >> /home/joaquim/kloufi-scrap/logs/voiture/automobile-gasoline.log 2>&1
+bash /home/joaquim/kloufi-scrap/sh/voiture/automobile.sh >> /home/joaquim/kloufi-scrap/logs/voiture/automobile.log 2>&1
+bash /home/joaquim/kloufi-scrap/sh/voiture/webstar-auto.sh >> /home/joaquim/kloufi-scrap/logs/voiture/webstar-auto.log 2>&1

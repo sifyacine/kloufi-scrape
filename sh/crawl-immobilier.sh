@@ -7,6 +7,12 @@ bash /home/joaquim/kloufi-scrap/sh/immobilier/lkeria/location.sh >> /home/joaqui
 bash /home/joaquim/kloufi-scrap/sh/immobilier/algerieannonces/vente.sh >> /home/joaquim/kloufi-scrap/logs/immobilier/algerieannonces/vente.log 2>&1
 bash /home/joaquim/kloufi-scrap/sh/immobilier/algerieannonces/location.sh >> /home/joaquim/kloufi-scrap/logs/immobilier/algerieannonces/location.log 2>&1
 bash /home/joaquim/kloufi-scrap/sh/immobilier/krello.sh >> /home/joaquim/kloufi-scrap/logs/immobilier/krello.log 2>&1
+bash /home/joaquim/kloufi-scrap/sh/immobilier/essekna.sh >> /home/joaquim/kloufi-scrap/logs/immobilier/essekna.log 2>&1
+bash /home/joaquim/kloufi-scrap/sh/immobilier/hebdoimmobilier-dz.sh >> /home/joaquim/kloufi-scrap/logs/immobilier/hebdoimmobilier-dz.log 2>&1
+bash /home/joaquim/kloufi-scrap/sh/immobilier/algeriahome/vente.sh >> /home/joaquim/kloufi-scrap/logs/immobilier/algeriahome/vente.log 2>&1
+bash /home/joaquim/kloufi-scrap/sh/immobilier/algeriahome/location.sh >> /home/joaquim/kloufi-scrap/logs/immobilier/algeriahome/location.log 2>&1
+bash /home/joaquim/kloufi-scrap/sh/immobilier/residencedz/vente.sh >> /home/joaquim/kloufi-scrap/logs/immobilier/residencedz/vente.log 2>&1
+bash /home/joaquim/kloufi-scrap/sh/immobilier/residencedz/location.sh >> /home/joaquim/kloufi-scrap/logs/immobilier/residencedz/location.log 2>&1
 bash /home/joaquim/kloufi-scrap/sh/immobilier/ouedkniss/vente-appartement.sh >> /home/joaquim/kloufi-scrap/logs/immobilier/ouedkniss/vente-appartement.log 2>&1
 bash /home/joaquim/kloufi-scrap/sh/immobilier/ouedkniss/vente-villa.sh >> /home/joaquim/kloufi-scrap/logs/immobilier/ouedkniss/vente-villa.log 2>&1
 bash /home/joaquim/kloufi-scrap/sh/immobilier/ouedkniss/vente-terrain.sh >> /home/joaquim/kloufi-scrap/logs/immobilier/ouedkniss/vente-terrain.log 2>&1
