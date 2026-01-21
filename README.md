@@ -58,6 +58,9 @@ Open issues or pull requests with proposed changes. Keep changes focused and inc
 
 ---
 
+## 🐧 Ubuntu 24 LTS deployment
+For a manual or automated setup on an Ubuntu server, see [DEPLOYMENT_UBUNTU.md](file:///c:/Users/admin/Desktop/kloufi-scrape/DEPLOYMENT_UBUNTU.md) for step-by-step instructions and an automated `setup.sh` script.
+
 ## 🐳 Docker deployment
 A convenient way to run the project is with Docker and Docker Compose. See `DEPLOYMENT.md` for step-by-step build and run instructions, including an option to install Playwright browsers if needed.
 
