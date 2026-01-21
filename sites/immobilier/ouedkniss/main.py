@@ -192,39 +192,29 @@ async def scrape_listing_page(page_number: int, semaphore, proxy_manager):
                     await new Promise(r => setTimeout(r, 2000));
                 }
                 
-                // 5. Aggressive scrolling to trigger all lazy loads
-                let lastHeight = document.body.scrollHeight;
-                let scrolls = 0;
-                while (scrolls < 50) {
-                    window.scrollBy(0, 800);
-                    await new Promise(r => setTimeout(r, 300));
-                    
-                    // Check if new content loaded
-                    const newHeight = document.body.scrollHeight;
-                    if (newHeight === lastHeight) {
-                        // No new content, scroll anyway a few more times
-                        scrolls++;
-                    } else {
-                        lastHeight = newHeight;
-                        scrolls = 0; // Reset counter when new content loads
-                    }
-                }
+                // 5. Final scroll
+                window.scrollTo(0, 1000);
+                await new Promise(r => setTimeout(r, 1000));
                 
-                // Final scroll to ensure everything is loaded
+                // 6. Stepped Scroll to trigger all lazy loads
+                for (let i = 0; i < 25; i++) {
+                    window.scrollBy(0, 1000);
+                    await new Promise(r => setTimeout(r, 400));
+                }
                 window.scrollTo(0, document.body.scrollHeight);
-                await new Promise(r => setTimeout(r, 3000));
+                await new Promise(r => setTimeout(r, 2000));
             })();
             """,
-            "await new Promise(r => setTimeout(r, 8000));"
+            "await new Promise(r => setTimeout(r, 5000));"
         ]
         
 
         config = CrawlerRunConfig(
             cache_mode=CacheMode.BYPASS,
             page_timeout=60000,
-            wait_until="domcontentloaded",
+            wait_until="domcontentloaded", # networkidle times out too often on heavy pages
             js_code=js_commands,
-            delay_before_return_html=3000  # 3 seconds to ensure all lazy content loads
+            delay_before_return_html=10 # Keep delay for lazy content to load
         )
 
         attempt = 0
