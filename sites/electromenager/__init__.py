@@ -1,0 +1,1 @@
+"""Electromenager sites package."""

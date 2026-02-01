@@ -3,7 +3,7 @@ import json
 import os
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 from bs4 import BeautifulSoup
-from scrape_details import extract_property_details
+from .scrape_details import extract_property_details
 
 # ===================== OUTPUT CONFIG =====================
 OUTPUT_DIR = "immobilier/krello"
