@@ -14,7 +14,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from utils.voiture import VoitureUtils
 
 try:
-    sys.path.insert(1, '../../global')
+    sys.path.insert(1, '../../../insert2db')
     from insert_scrape import insert_data_to_es
 except ImportError:
     def insert_data_to_es(data, index):

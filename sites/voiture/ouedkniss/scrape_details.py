@@ -12,7 +12,7 @@ from scraper.utils.logger import get_logger
 from utils.voiture import VoitureUtils
 
 try:
-    sys.path.insert(1, '../../global')
+    sys.path.insert(1, '../../../insert2db')
     from insert_scrape import insert_data_to_es
 except ImportError:
     def insert_data_to_es(data, index):

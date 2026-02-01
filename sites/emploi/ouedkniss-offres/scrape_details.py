@@ -5,7 +5,7 @@ import sys
 import os
 import json
 import asyncio
-sys.path.insert(1, '../../global')
+sys.path.insert(1, '../../../insert2db')
 from insert_scrape import insert_data_to_es
 import re
 
