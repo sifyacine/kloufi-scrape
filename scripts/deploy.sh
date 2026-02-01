@@ -26,7 +26,14 @@ log_error() { echo -e "${RED}[ERROR]${NC} $1"; }
 # ============================================================================
 INSTALL_DIR="${INSTALL_DIR:-/opt/kloufi-scrape}"
 SERVICE_USER="${SERVICE_USER:-kloufi}"
-PYTHON_VERSION="3.11"
+# Auto-detect Python version (prefer 3.12, then 3.11, then default python3)
+if command -v python3.12 &>/dev/null; then
+    PYTHON_CMD="python3.12"
+elif command -v python3.11 &>/dev/null; then
+    PYTHON_CMD="python3.11"
+else
+    PYTHON_CMD="python3"
+fi
 
 # ============================================================================
 # PRE-FLIGHT CHECKS
@@ -51,11 +58,10 @@ apt-get install -y \
     wget \
     git \
     build-essential \
-    python${PYTHON_VERSION} \
-    python${PYTHON_VERSION}-venv \
-    python${PYTHON_VERSION}-dev \
-    docker.io \
-    docker-compose \
+    python3 \
+    python3-venv \
+    python3-dev \
+    python3-pip \
     redis-server \
     # Browser dependencies for Playwright/Crawl4AI
     libnss3 \
@@ -70,7 +76,7 @@ apt-get install -y \
     libgbm1 \
     libpango-1.0-0 \
     libcairo2 \
-    libasound2 \
+    libasound2t64 \
     libatspi2.0-0 \
     fonts-liberation
 
@@ -111,10 +117,11 @@ chown -R "$SERVICE_USER:$SERVICE_USER" "$INSTALL_DIR"
 # PYTHON VIRTUAL ENVIRONMENT
 # ============================================================================
 log_info "Setting up Python virtual environment..."
+log_info "Using Python: $PYTHON_CMD"
 
 sudo -u "$SERVICE_USER" bash << EOF
 cd "$INSTALL_DIR"
-python${PYTHON_VERSION} -m venv venv
+$PYTHON_CMD -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt

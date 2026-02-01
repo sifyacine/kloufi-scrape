@@ -165,7 +165,7 @@ kloufi-scrape/
 
 ```bash
 # Clone repository
-git clone <your-repo-url>
+git clone https://github.com/sifyacine/kloufi-scrape.git
 cd kloufi-scrape
 
 # Create virtual environment
@@ -286,8 +286,9 @@ Local mode automatically:
 ### Option 1: Systemd Service (Recommended)
 
 ```bash
-# Run deployment script
-sudo ./scripts/deploy.sh
+# Make deploy script executable and run it
+chmod +x scripts/deploy.sh
+sudo bash scripts/deploy.sh
 
 # Configure
 sudo nano /opt/kloufi-scrape/.env
@@ -356,28 +357,28 @@ sudo /usr/share/elasticsearch/bin/elasticsearch-reset-password -u elastic
 ```bash
 cd docker
 
-# Start all services
-docker-compose up -d
+# Start all services (use 'docker compose' for newer Docker versions)
+sudo docker compose up -d
 
 # View logs
-docker-compose logs -f scraper
+sudo docker compose logs -f scraper
 
 # Stop
-docker-compose down
+sudo docker compose down
 ```
 
 ### Scrape Specific Categories
 
 ```bash
 # Only immobilier and voiture
-CATEGORIES="immobilier voiture" docker-compose up -d scraper
+CATEGORIES="immobilier voiture" sudo docker compose up -d scraper
 ```
 
 ### With Monitoring Stack
 
 ```bash
 # Start with Kibana, Prometheus, Grafana
-docker-compose --profile monitoring up -d
+sudo docker compose --profile monitoring up -d
 ```
 
 ### Services
