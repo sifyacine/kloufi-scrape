@@ -1,68 +1,117 @@
-# Kloufi Scrape (kloufi-scrape)
+# 🕷️ Kloufi-Scrape
 
-A Python web-scraping project with components for crawling, scraping, proxy management, and detection helpers.
+Production-ready web scraping system for continuous, automated data collection from Algerian websites.
 
-## 🔧 Quick start
+## ✨ Features
 
-Prerequisites:
-- Python 3.11+ (recommended)
-- git
+- **5 Categories**: Immobilier, Voiture, Emploi, Electromenager, Multimedia
+- **40+ Sites**: OuedKniss, Krello, Tonobiles, Emploitic, and more
+- **Auto-Scraping**: Runs 24/7 with intelligent scheduling
+- **Smart Proxies**: Automatic rotation with scoring system
+- **Dual Storage**: Elasticsearch (production) + JSON (testing)
+- **Real-time Alerts**: Telegram notifications for issues
+- **Docker Ready**: One-command deployment
 
-Setup:
+## 🚀 Quick Start
 
-1. Clone the repository
+### Local Testing
 
-   ```bash
-   git clone <your-repo-url>
-   cd kloufi-scrape
-   ```
+```bash
+# Setup
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1  # Windows
+source .venv/bin/activate      # Linux/Mac
+pip install -r requirements.txt
+crawl4ai-setup
 
-2. Create and activate a virtual environment
+# Configure
+cp .env.example .env
 
-   Windows (PowerShell):
-   ```powershell
-   python -m venv .venv
-   .\.venv\Scripts\Activate.ps1
-   ```
+# Run (saves to junk_test/)
+$env:KLOUFI_ENV="local"
+python scripts/local_test.py --category immobilier
+```
 
-3. Install dependencies
+### Production
 
-   ```bash
-   python -m pip install -r requirements.txt
-   ```
+```bash
+# Configure
+cp .env.example .env
+nano .env  # Add Elasticsearch & Telegram settings
 
-4. Run a component
+# Run
+export KLOUFI_ENV=production
+python core/dispatcher.py
+```
 
-   Example (crawler):
-   ```bash
-   python scraper/main.py
-   ```
+### Docker
 
-   Or run other scripts directly, e.g. `python immobilier/ouedkniss/main.py`.
+```bash
+cd docker
+docker-compose up -d
+```
 
-## 🧾 Files added
-- `.gitignore` — common Python ignores (virtualenv, caches, logs, env files)
-- `requirements.txt` — pinned dependencies from the current environment
-- `README.md` — this file
+## 📁 Project Structure
 
-## 📝 Notes
-- If you want to track dataset files under `data/`, remove or adjust any matching lines in `.gitignore`.
-- To regenerate `requirements.txt` after changing environment packages, run:
+```
+kloufi-scrape/
+├── config/           # Centralized configuration
+├── core/             # Orchestration & storage
+│   ├── dispatcher.py # Main auto-scraping controller
+│   ├── alerting.py   # Telegram/Email alerts
+│   └── storage.py    # Unified data storage
+├── scraper/          # Scraping infrastructure
+│   ├── proxy/        # Proxy management
+│   ├── browser/      # Browser fingerprinting
+│   └── detection/    # Block/captcha detection
+├── sites/            # Category scrapers
+│   ├── immobilier/   # Real estate sites
+│   ├── voiture/      # Vehicle sites
+│   ├── emploi/       # Job sites
+│   └── ...
+├── docker/           # Docker configuration
+├── scripts/          # Deployment scripts
+└── DOCUMENTATION.md  # Full documentation
+```
 
-  ```bash
-  python -m pip freeze > requirements.txt
-  ```
+## ⚙️ Configuration
 
-## Contributing
-Open issues or pull requests with proposed changes. Keep changes focused and include tests where possible.
+| Environment | Data Storage | Use Case |
+|-------------|--------------|----------|
+| `local` | JSON files in `junk_test/` | Development |
+| `production` | Elasticsearch | Live deployment |
+| `docker` | Elasticsearch | Container deployment |
+
+Set via `KLOUFI_ENV` environment variable.
+
+## 📊 Monitoring
+
+Configure Telegram alerts in `.env`:
+
+```env
+TELEGRAM_BOT_TOKEN=your_bot_token
+TELEGRAM_CHAT_ID=your_chat_id
+```
+
+Receive alerts for:
+- ✅ Scraping progress (every 100 items)
+- ⚠️ Block/captcha detection
+- 🚨 High error rates
+- ℹ️ Startup/shutdown events
+
+## 📖 Documentation
+
+See [DOCUMENTATION.md](DOCUMENTATION.md) for complete documentation including:
+- Architecture details
+- Adding new scrapers
+- Troubleshooting
+- Production deployment guide
+
+## 📝 License
+
+[Your License]
 
 ---
 
-## 🐧 Ubuntu 24 LTS deployment
-For a manual or automated setup on an Ubuntu server, see [DEPLOYMENT_UBUNTU.md](file:///c:/Users/admin/Desktop/kloufi-scrape/DEPLOYMENT_UBUNTU.md) for step-by-step instructions and an automated `setup.sh` script.
-
-## 🐳 Docker deployment
-A convenient way to run the project is with Docker and Docker Compose. See `DEPLOYMENT.md` for step-by-step build and run instructions, including an option to install Playwright browsers if needed.
-
-If you want, I can add a simple CI workflow, license file, or a CONTRIBUTING guide next. 👇
+*Built with [Crawl4AI](https://github.com/unclecode/crawl4ai)*
 

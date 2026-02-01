@@ -1,50 +1,131 @@
-import os
-import requests
-from dotenv import load_dotenv
-from elasticsearch import Elasticsearch
+"""
+Kloufi-Scrape Elasticsearch Insert Module
 
-# Load environment variables from .env file
+Handles inserting scraped data into Elasticsearch.
+Updated to use centralized configuration and storage.
+"""
+
+import os
+import sys
+from pathlib import Path
+from typing import Dict, Any, Optional
+
+# Add project root to path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from dotenv import load_dotenv
+
+# Load environment variables
 load_dotenv()
-es_host = os.getenv('ELASTICSEARCH_HOST', 'http://elastic1:9200')
+
+# Try to import from core storage (preferred)
+try:
+    from core.storage import DataStorage, get_storage, save_item
+    USE_CORE_STORAGE = True
+except ImportError:
+    USE_CORE_STORAGE = False
+
+# Fallback Elasticsearch client
+try:
+    from elasticsearch import Elasticsearch
+    ES_AVAILABLE = True
+except ImportError:
+    ES_AVAILABLE = False
+
+# Configuration
+es_host = os.getenv('ELASTICSEARCH_HOST', 'http://localhost:9200')
 es_username = os.getenv('ELASTICSEARCH_USERNAME', 'elastic')
 es_password = os.getenv('ELASTICSEARCH_PASSWORD', '')
 
-es = Elasticsearch(
-    [es_host],
-    http_auth=(es_username, es_password),
-)
+# Lazy-initialized Elasticsearch client
+_es_client: Optional[Elasticsearch] = None
 
-def insert_data_to_es(data, index_name):
-    try:        
-        if data["site_origine"] == "Krello.net":
-            # Search by id (url)
+
+def get_es_client() -> Optional[Elasticsearch]:
+    """Get or create Elasticsearch client."""
+    global _es_client
+    
+    if not ES_AVAILABLE:
+        return None
+    
+    if _es_client is None and es_password:
+        try:
+            _es_client = Elasticsearch(
+                [es_host],
+                basic_auth=(es_username, es_password),
+            )
+            if not _es_client.ping():
+                print(f"Warning: Elasticsearch ping failed for {es_host}")
+                _es_client = None
+        except Exception as e:
+            print(f"Elasticsearch connection error: {e}")
+            _es_client = None
+    
+    return _es_client
+
+
+def insert_data_to_es(data: Dict[str, Any], index_name: str) -> bool:
+    """
+    Insert data into Elasticsearch.
+    
+    Args:
+        data: Dictionary of data to insert
+        index_name: Elasticsearch index name (category)
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    # Prefer using core storage if available
+    if USE_CORE_STORAGE:
+        try:
+            return save_item(index_name, data)
+        except Exception as e:
+            print(f"Core storage error, falling back: {e}")
+    
+    # Fallback to direct Elasticsearch insert
+    es = get_es_client()
+    if not es:
+        print("Elasticsearch not available, data not saved")
+        return False
+    
+    try:
+        # Determine document ID
+        doc_id = data.get('url') or data.get('numero') or None
+        
+        # Handle special cases
+        if data.get("site_origine") == "Krello.net":
             try:
-                existing_item = es.get(index=index_name, id=data['url'], ignore=404)                
-                # If the document exists
-                if existing_item['found']:
-                    # Only keep the existing `date_depot` if it exists
-                    if "date_depot" in existing_item["_source"]:
-                        data["date_depot"] = existing_item["_source"]["date_depot"]
-                    
-                    # Insert or update document (without changing date_depot)
-                    insert = es.index(index=index_name, id=data['url'], body=data)
-                    print("Insert", insert)
-                else:
-                    # If the document does not exist, insert it normally
-                    insert = es.index(index=index_name, id=data['url'], body=data)
-                    print("Insert (new record)", insert)
-
-            except Exception as e:
-                insert = es.index(index=index_name, id=data['url'], body=data)
-
-        else:
-            if data["prix_unit"] == "DA" and index_name == "voiture":
-                data["export"] = "false"
-            insert = es.index(index=index_name, id=data['url'], body=data)
-            print("Data inserted", insert)
-
+                existing = es.get(index=index_name, id=doc_id, ignore=[404])
+                if existing.get('found'):
+                    # Preserve existing date_depot
+                    if "date_depot" in existing["_source"]:
+                        data["date_depot"] = existing["_source"]["date_depot"]
+            except Exception:
+                pass
+        
+        # Handle voiture export field
+        if data.get("prix_unit") == "DA" and index_name == "voiture":
+            data["export"] = "false"
+        
+        # Insert document
+        result = es.index(index=index_name, id=doc_id, document=data)
+        print(f"Data inserted to {index_name}: {result.get('result', 'unknown')}")
+        return True
+        
     except Exception as e:
         print(f"Error inserting data into Elasticsearch: {str(e)}")
+        return False
 
-    except requests.exceptions.RequestException as e:
-        print(f"Error inserting data into Elasticsearch: {str(e)}")
+
+# Alias for backward compatibility
+insert_to_elasticsearch = insert_data_to_es
+
+
+if __name__ == "__main__":
+    # Test connection
+    es = get_es_client()
+    if es:
+        print(f"Connected to Elasticsearch: {es_host}")
+        print(f"Cluster info: {es.info()}")
+    else:
+        print("Elasticsearch not configured or not available")
