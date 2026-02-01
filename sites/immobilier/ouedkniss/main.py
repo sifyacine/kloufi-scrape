@@ -8,7 +8,7 @@ import os
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
-from scrape_details import scrape_single_url
+from .scrape_details import scrape_single_url
 from utils.immobilier import ImmobilierUtils
 from datetime import datetime
 
