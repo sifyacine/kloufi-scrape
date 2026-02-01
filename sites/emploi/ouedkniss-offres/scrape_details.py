@@ -5,8 +5,7 @@ import sys
 import os
 import json
 import asyncio
-sys.path.insert(1, '../../../insert2db')
-from insert_scrape import insert_data_to_es
+from insert2db.insert_scrape import insert_data_to_es
 import re
 
 def traitement_prix(prix_dec, prix_unit):

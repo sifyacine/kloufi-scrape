@@ -10,12 +10,11 @@ from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 from urllib.parse import urljoin, parse_qs, urlparse
 
 # Add project root to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
 from utils.electromenager import ElectromenagerUtils
 
 try:
-    sys.path.insert(1, '../../../insert2db')
-    from insert_scrape import insert_data_to_es
+    from insert2db.insert_scrape import insert_data_to_es
 except ImportError:
     def insert_data_to_es(data, index):
         print(f"[Mock] Inserting data to ES index '{index}'")

@@ -8,15 +8,14 @@ from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode, BrowserConfig
 
 # Add project root to path to find 'scraper' and 'global'
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
 
 from scraper.crawler.crawler_runner import crawl
 from scraper.browser.fingerprint import build_context
 from utils.immobilier import ImmobilierUtils
 
 try:
-    sys.path.insert(1, '../../../insert2db')
-    from insert_scrape import insert_data_to_es
+    from insert2db.insert_scrape import insert_data_to_es
 except ImportError:
     def insert_data_to_es(data, index):
         print(f"[Mock] there is a problem in saving data'{index}'")

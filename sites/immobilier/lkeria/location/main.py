@@ -5,8 +5,7 @@ from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 from bs4 import BeautifulSoup
 from datetime import datetime
 import sys
-sys.path.insert(1, '../../../../insert2db')
-from insert_scrape import insert_data_to_es
+from insert2db.insert_scrape import insert_data_to_es
 import sys
 sys.setrecursionlimit(10000)
 
