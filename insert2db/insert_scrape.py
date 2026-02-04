@@ -9,6 +9,8 @@ import os
 import sys
 from pathlib import Path
 from typing import Dict, Any, Optional
+from elasticsearch import Elasticsearch
+from elasticsearch.helpers import bulk
 
 # Add project root to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -27,13 +29,12 @@ except ImportError:
 
 # Fallback Elasticsearch client
 try:
-    from elasticsearch import Elasticsearch
     ES_AVAILABLE = True
 except ImportError:
     ES_AVAILABLE = False
 
 # Configuration
-es_host = os.getenv('ELASTICSEARCH_HOST', 'http://localhost:9200')
+es_host = os.getenv('ELASTICSEARCH_HOST', 'http://192.168.9.222:9200')
 es_username = os.getenv('ELASTICSEARCH_USERNAME', 'elastic')
 es_password = os.getenv('ELASTICSEARCH_PASSWORD', '')
 
@@ -64,17 +65,23 @@ def get_es_client() -> Optional[Elasticsearch]:
     return _es_client
 
 
-def insert_data_to_es(data: Dict[str, Any], index_name: str) -> bool:
+def insert_data_to_es(data: Dict[str, Any], index_name: str = None, index: str = None) -> bool:
     """
     Insert data into Elasticsearch.
     
     Args:
         data: Dictionary of data to insert
         index_name: Elasticsearch index name (category)
+        index: Alias for index_name (for backward compatibility)
         
     Returns:
         True if successful, False otherwise
     """
+    # Support both 'index' and 'index_name' parameters
+    if index_name is None and index is not None:
+        index_name = index
+    elif index_name is None and index is None:
+        raise ValueError("Either 'index_name' or 'index' must be provided")
     # Prefer using core storage if available
     if USE_CORE_STORAGE:
         try:
@@ -114,6 +121,36 @@ def insert_data_to_es(data: Dict[str, Any], index_name: str) -> bool:
         
     except Exception as e:
         print(f"Error inserting data into Elasticsearch: {str(e)}")
+        return False
+
+
+def bulk_insert_to_es(docs: list, index_name: str) -> bool:
+    """
+    Bulk insert a list of documents into Elasticsearch.
+    Args:
+        docs: List of dictionaries to insert
+        index_name: Elasticsearch index name
+    Returns:
+        True if successful, False otherwise
+    """
+    es = get_es_client()
+    if not es:
+        print("Elasticsearch not available, data not saved")
+        return False
+    actions = [
+        {
+            "_index": index_name,
+            "_id": doc.get('url') or doc.get('numero'),
+            "_source": doc
+        }
+        for doc in docs
+    ]
+    try:
+        success, _ = bulk(es, actions)
+        print(f"Bulk inserted {success} documents to {index_name}")
+        return True
+    except Exception as e:
+        print(f"Bulk insert error: {e}")
         return False
 
 

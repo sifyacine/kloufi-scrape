@@ -1,28 +1,88 @@
+
+# === Batch size for ES bulk insert ===
+BATCH_SIZE = 48  # You can adjust this value as needed
+
 import sys
 import os
 import json
 import asyncio
 import re
 from datetime import datetime
+from typing import Optional
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode, BrowserConfig
+from insert2db.insert_scrape import insert_data_to_es, bulk_insert_to_es
 
-# Add project root to path to find 'scraper' and 'global'
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../')))
+# Add project root to path to find 'scraper', 'insert2db', and other modules
+PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../'))
+sys.path.insert(0, PROJECT_ROOT)
 
 from scraper.crawler.crawler_runner import crawl
 from scraper.browser.fingerprint import build_context
 from utils.immobilier import ImmobilierUtils
 
 try:
-    sys.path.insert(1, '../../global')
-    from insert_scrape import insert_data_to_es
+    from insert2db.insert_scrape import insert_data_to_es, bulk_insert_to_es
 except ImportError:
     def insert_data_to_es(data, index):
-        print(f"[Mock] there is a problem in saving data'{index}'")
+        print(f"[ES Mock] Elasticsearch module not available. Data not saved to '{index}'")
 
 
-async def scrape_single_url(target_url, proxy_manager=None, max_retries=3, retry_delay=5):
+# ========================= ZONE-AWARE CONFIGURATION =========================
+# Retry and delay settings per zone for optimized performance
+ZONE_SETTINGS = {
+    "realtime": {
+        "max_retries": 2,      # Fewer retries for speed (page 1 every 30s)
+        "retry_delay": 0.5,    # Quick retry
+        "delay_before_html": 1  # Minimal delay for fresh listings
+    },
+    "warm": {
+        "max_retries": 3,
+        "retry_delay": 3,
+        "delay_before_html": 2
+    },
+    "cold": {
+        "max_retries": 5,      # More retries for reliability
+        "retry_delay": 5,
+        "delay_before_html": 2.5  # More patience for older pages
+    },
+    "default": {
+        "max_retries": 3,
+        "retry_delay": 5,
+        "delay_before_html": 2
+    }
+}
+
+
+async def scrape_single_url(
+    target_url: str, 
+    proxy_manager=None, 
+    max_retries: int = 3, 
+    retry_delay: int = 5,
+    zone: Optional[str] = None
+):
+    """
+    Scrape a single property URL and extract all relevant data.
+    
+    Args:
+        target_url: The property listing URL to scrape
+        proxy_manager: Optional proxy manager for rotation
+        max_retries: Maximum retry attempts (overridden by zone settings if zone provided)
+        retry_delay: Delay between retries (overridden by zone settings if zone provided)
+        zone: Zone identifier ('hot', 'warm', 'cold') for zone-aware settings
+    """
+    # Apply zone-specific settings if zone is provided
+    zone_config = ZONE_SETTINGS.get(zone, ZONE_SETTINGS["default"])
+    effective_max_retries = zone_config["max_retries"]
+    effective_retry_delay = zone_config["retry_delay"]
+    delay_before_html = zone_config["delay_before_html"]
+    
+    # Allow explicit overrides to take precedence
+    if max_retries != 3:  # Non-default value passed
+        effective_max_retries = max_retries
+    if retry_delay != 5:  # Non-default value passed
+        effective_retry_delay = retry_delay
+    
     # JS for scrolling to load dynamic content (User Info)
     js_commands = [
         """
@@ -83,21 +143,23 @@ async def scrape_single_url(target_url, proxy_manager=None, max_retries=3, retry
     config = CrawlerRunConfig(
         cache_mode=CacheMode.BYPASS, 
         js_code=js_commands, 
-        delay_before_return_html=2, # Minimized delay
+        delay_before_return_html=delay_before_html,
         page_timeout=60000, 
         wait_until="domcontentloaded"
     )
 
-    for attempt in range(max_retries):
+    zone_prefix = f"[{zone.upper()}] " if zone else ""
+
+    for attempt in range(effective_max_retries):
         proxy = None
         if proxy_manager:
             try:
                 proxy = proxy_manager.get_proxy("ouedkniss.com")
             except Exception:
-                print("No proxies available.")
+                print(f"{zone_prefix}No proxies available.")
         
         context = build_context()
-        print(f"[{datetime.now().time()}] Scraping {target_url} | Proxy: {proxy} (Attempt {attempt+1}/{max_retries})")
+        print(f"{zone_prefix}[{datetime.now().time()}] Scraping {target_url} | Proxy: {proxy} (Attempt {attempt+1}/{effective_max_retries})")
 
         # Append locale=fr to ensure French
         sep = "&" if "?" in target_url else "?"
@@ -425,6 +487,11 @@ async def scrape_single_url(target_url, proxy_manager=None, max_retries=3, retry
                     "as_prix": "Avec prix" if price_value else "Sans prix"
                 }
 
+                property_data["id"] = property_data["url"] + "_" + property_data["date_crawl"]
+
+                global batch_buffer
+                property_data["id"] = property_data["url"] + "_" + property_data["date_crawl"]
+
                 if not ImmobilierUtils.is_essential_data_empty(property_data):
                     print(json.dumps(property_data, indent=2, ensure_ascii=False))
 
@@ -432,32 +499,37 @@ async def scrape_single_url(target_url, proxy_manager=None, max_retries=3, retry
                     try:
                         ImmobilierUtils.save_listing_file(property_data)
                     except Exception as e:
-                        print(f"[SAVE] Failed to write listing file: {e}")
+                        print(f"{zone_prefix}[SAVE] Failed to write listing file: {e}")
 
                     # Optionally append to JSONL
                     # ImmobilierUtils.save_to_json(property_data)
 
-                    # Send to Elasticsearch immediately
-                    try:
-                        insert_data_to_es(property_data, index="immobilier")
-                        print(f"[ES] Inserted: {property_data['titre'][:50]}...")
-                    except Exception as e:
-                        print(f"[ES] Failed to insert: {e}")
+                    # Add to batch buffer for bulk insert
+                    batch_buffer.append(property_data)
+                    if len(batch_buffer) >= BATCH_SIZE:
+                        try:
+                            bulk_insert_to_es(batch_buffer, "immobilier")
+                            print(f"{zone_prefix}[ES] Bulk inserted {len(batch_buffer)} docs.")
+                            batch_buffer.clear()
+                        except Exception as e:
+                            print(f"{zone_prefix}[ES] Bulk insert failed: {e}")
+                    else:
+                        print(f"{zone_prefix}[ES] Buffered: {len(batch_buffer)}/{BATCH_SIZE}")
 
-
-                    return  # Exit after success
+                    return property_data  # Return data on success
 
         except Exception as e:
-            print(f"Internal Crawl Error for {target_url}: {e}")
+            print(f"{zone_prefix}Internal Crawl Error for {target_url}: {e}")
             if proxy_manager:
                 if proxy:
                     proxy_manager.report_failure(proxy)
                 proxy_manager.rotate("ouedkniss.com")
 
-        # Reduced retry delay for faster cycling
-        await asyncio.sleep(1)
+        # Zone-aware retry delay
+        await asyncio.sleep(effective_retry_delay)
 
-    print(f"Failed to scrape {target_url} after {max_retries} attempts.")
+    print(f"{zone_prefix}Failed to scrape {target_url} after {effective_max_retries} attempts.")
+    return None
 
 
 # Test

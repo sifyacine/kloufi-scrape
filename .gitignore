@@ -42,7 +42,8 @@ htmlcov/
 # OS files
 .DS_Store
 Thumbs.db
-
+scraped_urls_cache.json
+*.md
 # Logs
 logs/
 *.log
