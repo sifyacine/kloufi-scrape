@@ -1,6 +1,15 @@
+# Batch buffer for bulk insert (module-level, shared across calls)
+batch_buffer = []
+BATCH_SIZE = 48
 
-# === Batch size for ES bulk insert ===
-BATCH_SIZE = 48  # You can adjust this value as needed
+def flush_batch_buffer():
+    if batch_buffer:
+        try:
+            bulk_insert_to_es(batch_buffer, "immobilier")
+            print(f"[ES] Bulk inserted {len(batch_buffer)} docs (final flush).")
+            batch_buffer.clear()
+        except Exception as e:
+            print(f"[ES] Final bulk insert failed: {e}")
 
 import sys
 import os
@@ -10,8 +19,8 @@ import re
 from datetime import datetime
 from typing import Optional
 from bs4 import BeautifulSoup
-from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode, BrowserConfig
-from insert2db.insert_scrape import insert_data_to_es, bulk_insert_to_es
+from crawl4ai import CrawlerRunConfig, CacheMode
+from insert2db.insert_scrape import bulk_insert_to_es
 
 # Add project root to path to find 'scraper', 'insert2db', and other modules
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../'))
@@ -23,6 +32,7 @@ from utils.immobilier import ImmobilierUtils
 
 try:
     from insert2db.insert_scrape import insert_data_to_es, bulk_insert_to_es
+
 except ImportError:
     def insert_data_to_es(data, index):
         print(f"[ES Mock] Elasticsearch module not available. Data not saved to '{index}'")
@@ -490,7 +500,7 @@ async def scrape_single_url(
                 property_data["id"] = property_data["url"] + "_" + property_data["date_crawl"]
 
                 global batch_buffer
-                property_data["id"] = property_data["url"] + "_" + property_data["date_crawl"]
+                # property_data["id"] = property_data["url"] + "_" + property_data["date_crawl"]  # REMOVE THIS LINE
 
                 if not ImmobilierUtils.is_essential_data_empty(property_data):
                     print(json.dumps(property_data, indent=2, ensure_ascii=False))

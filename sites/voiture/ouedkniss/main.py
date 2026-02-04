@@ -10,7 +10,7 @@ from scrape_details import scrape_single_url
 from datetime import datetime
 
 # Add project root to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
 from scraper.proxy.proxy_sources import fetch_proxies
 from scraper.proxy.proxy_manager import ProxyManager
 from scraper.crawler.crawler_runner import crawl

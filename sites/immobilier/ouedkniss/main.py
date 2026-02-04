@@ -21,10 +21,10 @@ from collections import deque
 from pathlib import Path
 
 # Add project root to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
-from scrape_details import scrape_single_url
+from sites.immobilier.ouedkniss.scrape_details import scrape_single_url
 from utils.immobilier import ImmobilierUtils
 from datetime import datetime
 

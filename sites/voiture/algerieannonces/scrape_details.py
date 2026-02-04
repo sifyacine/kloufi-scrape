@@ -6,7 +6,7 @@ from urllib.parse import urljoin
 import sys, os
 
 # Add project root to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
 
 from bs4 import BeautifulSoup
 from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
@@ -14,8 +14,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from utils.voiture import VoitureUtils
 
 try:
-    sys.path.insert(1, '../../global')
-    from insert_scrape import insert_data_to_es
+    from insert2db.insert_scrape import insert_data_to_es
 except ImportError:
     def insert_data_to_es(data, index):
         print(f"[Mock] there is a problem in saving data'{index}'")

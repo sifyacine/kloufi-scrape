@@ -5,9 +5,8 @@ import os
 import json
 import asyncio
 import sys
-sys.path.insert(1, '../../global')
 import re
-from insert_scrape import insert_data_to_es
+from insert2db.insert_scrape import insert_data_to_es
 
 def traitement_prix(prix_dec, prix_unit):
     conversion = {"Millions": 10000, "Milliards": 10000000}

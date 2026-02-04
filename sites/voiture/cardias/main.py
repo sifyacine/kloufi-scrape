@@ -4,8 +4,7 @@ from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig, CacheMode
 from bs4 import BeautifulSoup
 from scrape_details import extract_car_details  # Ensure this function is implemented
 import sys
-sys.path.insert(1, '../../global')
-from insert_scrape import insert_data_to_es
+from insert2db.insert_scrape import insert_data_to_es
 
 # Global list to collect detail page URLs
 all_urls = []
