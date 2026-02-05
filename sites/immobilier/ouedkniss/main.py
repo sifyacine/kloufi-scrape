@@ -385,6 +385,9 @@ class ZoneRunner:
                 localStorage.setItem('ok-auth-frame', JSON.stringify({ locale: 'fr' }));
                 document.cookie = "ok-locale=fr; domain=.ouedkniss.com; path=/; max-age=31536000";
                 
+                // Helper to wait for elements
+                const wait = ms => new Promise(r => setTimeout(r, ms));
+                
                 // 2. Detect Arabic and Reload if necessary
                 const isRTL = document.body.dir === 'rtl' || document.documentElement.dir === 'rtl';
                 const isArabicLang = document.documentElement.lang === 'ar';
@@ -392,47 +395,36 @@ class ZoneRunner:
                 
                 if (isRTL || isArabicLang || hasArabicTitle) {
                     console.log("Arabic detected! Reloading with forced locale...");
-                    
-                    // Re-assert cookies just in case
                     document.cookie = "ok-locale=fr; domain=.ouedkniss.com; path=/; max-age=31536000";
-                    
-                    // Force reload
-                    window.location.reload();
-                    
-                    // Wait to prevent further execution in this stale context
-                    await new Promise(r => setTimeout(r, 5000));
-                } else {
-                    console.log("Page seems to be in French. Proceeding.");
+                    window.location.href = window.location.href.split('?')[0] + '?locale=fr';
+                    await wait(5000);
+                    return;
                 }
 
                 // 3. Click Menu if found (extra safety)
                 const menuBtn = document.querySelector('button[aria-label="Menu"], button[aria-label="القائمة"], button[aria-label="قائمة"]');
                 if (menuBtn) {
                     menuBtn.click();
-                    await new Promise(r => setTimeout(r, 1000));
+                    await wait(1000);
                 }
                 
                 // 4. Click FR button directly if visible
-                const frBtn = Array.from(document.querySelectorAll('button')).find(b => 
-                    b.textContent.trim() === 'FR' || 
+                const frBtn = Array.from(document.querySelectorAll('button, a')).find(b => 
+                    b.textContent.trim().toUpperCase() === 'FR' || 
                     b.getAttribute('aria-label') === 'Français'
                 );
                 if (frBtn) {
                     frBtn.click();
-                    await new Promise(r => setTimeout(r, 2000));
+                    await wait(2000);
                 }
                 
-                // 5. Final scroll
-                window.scrollTo(0, 1000);
-                await new Promise(r => setTimeout(r, 1000));
-                
-                // 6. Stepped Scroll to trigger all lazy loads
-                for (let i = 0; i < 25; i++) {
-                    window.scrollBy(0, 1000);
-                    await new Promise(r => setTimeout(r, 400));
+                // 5. Stepped Scroll to trigger all lazy loads
+                for (let i = 0; i < 15; i++) {
+                    window.scrollBy(0, 800);
+                    await wait(300);
                 }
                 window.scrollTo(0, document.body.scrollHeight);
-                await new Promise(r => setTimeout(r, 2000));
+                await wait(2000);
             })();
             """,
             "await new Promise(r => setTimeout(r, 5000));"
@@ -541,11 +533,17 @@ class ZoneRunner:
                 if html_count > 0:
                     log.debug(f"[{self.config.name}] Extracted {html_count} UNIQUE URLs via HTML Parsing")
 
-                if not urls:
-                    if "challenge" in result.html.lower() or "cloudflare" in result.html.lower():
+                    if ("challenge" in result.html.lower() or "cloudflare" in result.html.lower()):
                         log.warning(f"[{self.config.name}] Blocked by Cloudflare on page {page_number}")
                         if self.proxy_manager and proxy:
                             self.proxy_manager.report_failure(proxy)
+                    
+                    # Diagnostic: Save HTML on extraction failure
+                    diag_path = Path(__file__).parent / "logs" / f"failed_page_{page_number}_{int(time.time())}.html"
+                    diag_path.parent.mkdir(exist_ok=True)
+                    with open(diag_path, "w", encoding="utf-8") as f:
+                        f.write(result.html)
+                    log.error(f"[{self.config.name}] Extraction failed for page {page_number}. HTML saved to {diag_path}")
                     
                     raise Exception("No listings extraction success")
                 
