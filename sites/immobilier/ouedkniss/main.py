@@ -493,6 +493,7 @@ class ZoneRunner:
                 # Comprehensive list of selectors for Ouedkniss listing links
                 selectors = [
                     "a.o-announ-card-content", 
+                    ".search-view-item a",
                     "div.o-announ-card-column > a",
                     "a.v-card",
                     "div.announcement-card a",
@@ -530,9 +531,7 @@ class ZoneRunner:
                             urls.append(full_url)
                             html_count += 1
                 
-                if html_count > 0:
-                    log.debug(f"[{self.config.name}] Extracted {html_count} UNIQUE URLs via HTML Parsing")
-
+                if not urls:
                     if ("challenge" in result.html.lower() or "cloudflare" in result.html.lower()):
                         log.warning(f"[{self.config.name}] Blocked by Cloudflare on page {page_number}")
                         if self.proxy_manager and proxy:
@@ -546,6 +545,8 @@ class ZoneRunner:
                     log.error(f"[{self.config.name}] Extraction failed for page {page_number}. HTML saved to {diag_path}")
                     
                     raise Exception("No listings extraction success")
+                else:
+                    log.debug(f"[{self.config.name}] Found {len(urls)} ads")
                 
                 log.info(f"[{self.config.name}] Page {page_number} SUCCESS → Found {len(urls)} ads")
                 if self.proxy_manager and proxy:
