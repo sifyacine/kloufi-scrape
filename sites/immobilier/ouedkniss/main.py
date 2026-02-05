@@ -429,6 +429,9 @@ class ZoneRunner:
             try:
                 log.info(f"[{self.config.name}] Page {page_number} (Attempt {attempt}) - Proxy: {proxy}")
                 
+                # Build browser context
+                context = build_context()
+                
                 # Robust crawl with error handling for partial results
                 result = None
                 try:
