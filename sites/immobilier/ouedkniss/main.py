@@ -523,8 +523,7 @@ class ZoneRunner:
                             urls.append(full_url)
                             html_count += 1
                 
-                if not urls:
-                if not result or not result.success:
+                if not result or not result.success or not urls:
                     if result and ("challenge" in result.html.lower() or "cloudflare" in result.html.lower()):
                         log.warning(f"[{self.config.name}] Blocked by Cloudflare on page {page_number}")
                         if self.proxy_manager and proxy:
