@@ -435,6 +435,7 @@ class ZoneRunner:
             cache_mode=CacheMode.BYPASS,
             page_timeout=60000,
             wait_until="domcontentloaded",
+            wait_for="css:.o-announ-card, .search-view-item, a.o-announ-card-content", # Wait for at least one listing to appear
             js_code=js_commands,
             delay_before_return_html=10
         )
@@ -507,26 +508,34 @@ class ZoneRunner:
                         links.extend(found)
                         log.debug(f"[{self.config.name}] Found {len(found)} links with selector '{sel}'")
                 
+                # FALLBACK: If no links found via selectors, try finding any link that looks like an ad
+                if not links:
+                    all_links = soup.find_all("a")
+                    log.debug(f"[{self.config.name}] Extraction fallback: Checking all {len(all_links)} links")
+                    for link in all_links:
+                        href = link.get("href")
+                        if href and re.search(r'-d\d+$', href):
+                            links.append(link)
+                
                 html_count = 0
                 for link in links:
-                    href = link.get("href")
+                    href = link.get("href", "")
                     if href:
                         # Skip social or auth links
                         if any(x in href for x in ["/membre/", "/login", "/register", "facebook.com", "google.com"]):
                             continue
                         
+                        full_url = ""
                         if href.startswith("/"):
                             # Filter for actual ad links (usually follow a pattern)
-                            if not re.search(r'/[^/]+-d\d+$', href):
+                            if not re.search(r'-d\d+$', href):
                                 if "/immobilier-" in href: continue 
                             
                             full_url = f"https://www.ouedkniss.com{href}"
                         elif href.startswith("https://www.ouedkniss.com"):
                             full_url = href
-                        else:
-                            continue
-
-                        if full_url not in seen:
+                        
+                        if full_url and full_url not in seen:
                             seen.add(full_url)
                             urls.append(full_url)
                             html_count += 1
