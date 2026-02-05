@@ -211,9 +211,7 @@ if BIEN:
     base_slug += f"-{BIEN}"
 
 TARGET_URL_BASE = f"https://www.ouedkniss.com/{base_slug}/"
-# Force French via URL parameter to avoid JS reloads
-TARGET_URL_PARAMS = "?locale=fr"
-log.info(f"Targeting Base URL: {TARGET_URL_BASE} (Force FR: {TARGET_URL_PARAMS})")
+log.info(f"Targeting Base URL: {TARGET_URL_BASE}")
 
 # ========================= LEGACY CONFIG (preserved for backward compatibility) =========================
 BATCH_SIZE = 1                   # Match concurrency to fill batch immediately
@@ -375,21 +373,45 @@ class ZoneRunner:
     async def _scrape_listing_page(self, page_number: int) -> List[str]:
         """Scrape a single listing page and return URLs."""
         base_target = f"{TARGET_URL_BASE}{page_number}" if page_number > 1 else TARGET_URL_BASE
-        target_url = f"{base_target}{TARGET_URL_PARAMS}" # Append locale parameter
+        target_url = base_target
         
         js_commands = [
-            # Helper to wait for elements
-            "const wait = ms => new Promise(r => setTimeout(r, ms));",
+
             """
             (async () => {
-                console.log("Starting Passive Locale Enforcement...");
+                console.log("Starting Locale Enforcement...");
+
+                // 1. Force French via LocalStorage and Cookies
                 localStorage.setItem('ok-auth-frame', JSON.stringify({ locale: 'fr' }));
                 document.cookie = "ok-locale=fr; domain=.ouedkniss.com; path=/; max-age=31536000";
                 
-                // 4. Click FR button ONLY if visible and not already active
+                // Helper to wait for elements
+                const wait = ms => new Promise(r => setTimeout(r, ms));
+                
+                // 2. Detect Arabic and Reload if necessary
+                const isRTL = document.body.dir === 'rtl' || document.documentElement.dir === 'rtl';
+                const isArabicLang = document.documentElement.lang === 'ar';
+                const hasArabicTitle = /[\u0600-\u06FF]/.test(document.title);
+                
+                if (isRTL || isArabicLang || hasArabicTitle) {
+                    console.log("Arabic detected! Reloading with forced locale...");
+                    document.cookie = "ok-locale=fr; domain=.ouedkniss.com; path=/; max-age=31536000";
+                    window.location.href = window.location.href.split('?')[0] + '?locale=fr';
+                    await wait(5000);
+                    return;
+                }
+
+                // 3. Click Menu if found (extra safety)
+                const menuBtn = document.querySelector('button[aria-label="Menu"], button[aria-label="القائمة"], button[aria-label="قائمة"]');
+                if (menuBtn) {
+                    menuBtn.click();
+                    await wait(1000);
+                }
+                
+                // 4. Click FR button directly if visible
                 const frBtn = Array.from(document.querySelectorAll('button, a')).find(b => 
-                    (b.textContent.trim().toUpperCase() === 'FR' || b.getAttribute('aria-label') === 'Français') &&
-                    !b.classList.contains('v-btn--active')
+                    b.textContent.trim().toUpperCase() === 'FR' || 
+                    b.getAttribute('aria-label') === 'Français'
                 );
                 if (frBtn) {
                     frBtn.click();
@@ -412,9 +434,9 @@ class ZoneRunner:
         config = CrawlerRunConfig(
             cache_mode=CacheMode.BYPASS,
             page_timeout=60000,
-            wait_until="networkidle", # More lenient for slower VPS
+            wait_until="domcontentloaded",
             js_code=js_commands,
-            delay_before_return_html=5
+            delay_before_return_html=10
         )
 
         max_retries = 5
@@ -426,20 +448,11 @@ class ZoneRunner:
                 except Exception:
                     log.warning(f"[{self.config.name}] No proxies available for listing.")
 
+            context = build_context()
+
             try:
                 log.info(f"[{self.config.name}] Page {page_number} (Attempt {attempt}) - Proxy: {proxy}")
-                
-                # Build browser context
-                context = build_context()
-                
-                # Robust crawl with error handling for partial results
-                result = None
-                try:
-                    result = await crawl(target_url, proxy, context, config=config, headless=True)
-                except Exception as e:
-                    log.warning(f"[{self.config.name}] Crawl error (possible timeout): {e}")
-                    # If we have a log of the failure, it might be in crawl logs
-                    raise # Re-raise to trigger catch block
+                result = await crawl(target_url, proxy, context, config=config, headless=True)
                 
                 if not result.success:
                     log.warning(f"[{self.config.name}] Failed Page {page_number} (Status: {result.status_code})")
@@ -480,7 +493,6 @@ class ZoneRunner:
                 # Comprehensive list of selectors for Ouedkniss listing links
                 selectors = [
                     "a.o-announ-card-content", 
-                    ".search-view-item a",
                     "div.o-announ-card-column > a",
                     "a.v-card",
                     "div.announcement-card a",
@@ -494,47 +506,49 @@ class ZoneRunner:
                         links.extend(found)
                         log.debug(f"[{self.config.name}] Found {len(found)} links with selector '{sel}'")
                 
-                # FALLBACK: If no links found via selectors, try finding any link that looks like an ad
-                if not links:
-                    all_links = soup.find_all("a")
-                    log.debug(f"[{self.config.name}] Extraction fallback: Checking all {len(all_links)} links")
-                    for link in all_links:
-                        href = link.get("href")
-                        if href and re.search(r'-d\d+$', href):
-                            links.append(link)
-                
                 html_count = 0
                 for link in links:
-                    href = link.get("href", "")
+                    href = link.get("href")
                     if href:
                         # Skip social or auth links
                         if any(x in href for x in ["/membre/", "/login", "/register", "facebook.com", "google.com"]):
                             continue
                         
-                        full_url = ""
                         if href.startswith("/"):
                             # Filter for actual ad links (usually follow a pattern)
-                            if not re.search(r'-d\d+$', href):
+                            if not re.search(r'/[^/]+-d\d+$', href):
                                 if "/immobilier-" in href: continue 
                             
                             full_url = f"https://www.ouedkniss.com{href}"
                         elif href.startswith("https://www.ouedkniss.com"):
                             full_url = href
-                        
-                        if full_url and full_url not in seen:
+                        else:
+                            continue
+
+                        if full_url not in seen:
                             seen.add(full_url)
                             urls.append(full_url)
                             html_count += 1
                 
-                if not result or not result.success or not urls:
-                    if result and ("challenge" in result.html.lower() or "cloudflare" in result.html.lower()):
+                # Check if extraction succeeded
+                if html_count == 0 and len(urls) == 0:
+                    # No listings extracted at all - this is a failure
+                    if ("challenge" in result.html.lower() or "cloudflare" in result.html.lower()):
                         log.warning(f"[{self.config.name}] Blocked by Cloudflare on page {page_number}")
                         if self.proxy_manager and proxy:
                             self.proxy_manager.report_failure(proxy)
                     
-                    raise Exception("No listings extraction success or crawl failed")
-                else:
-                    log.debug(f"[{self.config.name}] Found {len(urls)} ads")
+                    # Diagnostic: Save HTML on extraction failure
+                    diag_path = Path(__file__).parent / "logs" / f"failed_page_{page_number}_{int(time.time())}.html"
+                    diag_path.parent.mkdir(exist_ok=True)
+                    with open(diag_path, "w", encoding="utf-8") as f:
+                        f.write(result.html)
+                    log.error(f"[{self.config.name}] Extraction failed for page {page_number}. HTML saved to {diag_path}")
+                    
+                    raise Exception("No listings extraction success")
+                
+                if html_count > 0:
+                    log.debug(f"[{self.config.name}] Extracted {html_count} UNIQUE URLs via HTML Parsing")
                 
                 log.info(f"[{self.config.name}] Page {page_number} SUCCESS → Found {len(urls)} ads")
                 if self.proxy_manager and proxy:
@@ -543,15 +557,6 @@ class ZoneRunner:
 
             except Exception as e:
                 log.error(f"[{self.config.name}] Error scraping page {page_number}: {e}")
-                
-                # Diagnostic: Save HTML on any failure if we have it
-                if 'result' in locals() and result and hasattr(result, 'html'):
-                    diag_path = Path(__file__).parent / "logs" / f"failed_page_{page_number}_{int(time.time())}.html"
-                    diag_path.parent.mkdir(exist_ok=True)
-                    with open(diag_path, "w", encoding="utf-8") as f:
-                        f.write(result.html)
-                    log.info(f"[{self.config.name}] Failure diagnostic: HTML saved to {diag_path}")
-
                 if self.proxy_manager:
                     if proxy:
                         self.proxy_manager.report_failure(proxy)
