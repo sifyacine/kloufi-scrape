@@ -174,6 +174,8 @@ parser.add_argument("--continuous", action="store_true", default=os.getenv("CONT
                     help="Run continuously with scheduled intervals")
 parser.add_argument("--single-pass", action="store_true", default=False,
                     help="Run a single pass then exit (default behavior for backward compatibility)")
+parser.add_argument("--no-proxy", action="store_true", default=False,
+                    help="Disable proxy usage and run directly (useful for VPS debugging)")
 args = parser.parse_args()
 
 
@@ -443,11 +445,13 @@ class ZoneRunner:
         max_retries = 5
         for attempt in range(1, max_retries + 1):
             proxy = None
-            if self.proxy_manager:
+            if self.proxy_manager and not args.no_proxy:
                 try:
                     proxy = self.proxy_manager.get_proxy("ouedkniss.com")
                 except Exception:
                     log.warning(f"[{self.config.name}] No proxies available for listing.")
+            elif args.no_proxy:
+                log.info(f"[{self.config.name}] Proxy usage disabled via --no-proxy")
 
             context = build_context()
 
