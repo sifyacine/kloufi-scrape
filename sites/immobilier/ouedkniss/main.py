@@ -176,6 +176,8 @@ parser.add_argument("--single-pass", action="store_true", default=False,
                     help="Run a single pass then exit (default behavior for backward compatibility)")
 parser.add_argument("--no-proxy", action="store_true", default=False,
                     help="Disable proxy usage and run directly (useful for VPS debugging)")
+parser.add_argument("--show-browser", action="store_true", default=False,
+                    help="Run browser in headful mode (visible UI) for debugging")
 args = parser.parse_args()
 
 
@@ -840,7 +842,7 @@ async def verify_proxy_subsystem(proxy_manager):
             log.info(f"Testing proxy connection via {proxy} (Attempt {i+1})...")
             
             try:
-                result = await crawl(check_url, proxy, context)
+                result = await crawl(check_url, proxy, context, headless=not args.show_browser)
                 
                 if result.success:
                     # Parse JSON to confirm masking
