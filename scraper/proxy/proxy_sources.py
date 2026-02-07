@@ -13,7 +13,15 @@ async def fetch_proxies():
                 async with session.get(url, timeout=20) as r:
                     if r.status == 200:
                         text = await r.text()
-                        proxies.update(text.split())
+                        for p in text.split():
+                            # Remove whitespace
+                            p = p.strip()
+                            if not p:
+                                continue
+                            # Ensure protocol
+                            if not p.startswith("http"):
+                                p = f"http://{p}"
+                            proxies.add(p)
             except Exception:
                 pass
     return list(proxies)
