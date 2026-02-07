@@ -375,8 +375,9 @@ class ZoneRunner:
         base_target = f"{TARGET_URL_BASE}{page_number}" if page_number > 1 else TARGET_URL_BASE
         target_url = base_target
         
-        js_commands = [
+        log.info(f"[{self.config.name}] STARTING SCRAPE for Page {page_number} -> URL: {target_url}")
 
+        js_commands = [
             """
             (async () => {
                 console.log("Starting Locale Enforcement...");
@@ -458,22 +459,31 @@ class ZoneRunner:
                     log.warning(f"[{self.config.name}] Failed Page {page_number} (Status: {result.status_code})")
                     raise Exception(f"Crawl failed status {result.status_code}")
 
+                log.info(f"[{self.config.name}] Page {page_number} Crawl SUCCESS. HTML Length: {len(result.html)}")
+                
                 urls = []
                 seen = set()
 
+                # --- JSON-LD DEBUGGING ---
                 matches = re.findall(r'"itemListElement":(\[.*?\])', result.html, re.DOTALL)
+                log.debug(f"[{self.config.name}] found {len(matches)} JSON-LD matches")
+                
                 if len(matches) >= 1:
                     try:
                         json_str = matches[-1] 
                         data = json.loads(json_str)
+                        log.debug(f"[{self.config.name}] JSON-LD Data Items count: {len(data)}")
                         for item in data:
                             url = item.get("url")
                             if url and url not in seen and url.startswith("http"):
                                 seen.add(url)
                                 urls.append(url)
-                        log.debug(f"[{self.config.name}] Extracted {len(urls)} URLs via JSON-LD")
-                    except Exception:
+                        log.info(f"[{self.config.name}] Extracted {len(urls)} URLs via JSON-LD")
+                    except Exception as e:
+                        log.error(f"[{self.config.name}] JSON-LD parsing error: {e}")
                         pass
+                else:
+                    log.warning(f"[{self.config.name}] No JSON-LD 'itemListElement' found in HTML")
 
                 # ALWAYS try HTML extraction to supplement JSON-LD
                 soup = BeautifulSoup(result.html, "html.parser")
@@ -486,9 +496,10 @@ class ZoneRunner:
                     "no results found"
                 ]
                 page_text = soup.get_text().lower()
-                if any(marker in page_text for marker in no_results_markers):
-                    log.info(f"[{self.config.name}] Page {page_number} -> No ads found")
-                    return []
+                for marker in no_results_markers:
+                    if marker in page_text:
+                        log.info(f"[{self.config.name}] Page {page_number} -> Marker found: '{marker}' -> stopping")
+                        return []
 
                 # Comprehensive list of selectors for Ouedkniss listing links
                 selectors = [
@@ -505,6 +516,8 @@ class ZoneRunner:
                     if found:
                         links.extend(found)
                         log.debug(f"[{self.config.name}] Found {len(found)} links with selector '{sel}'")
+                    else:
+                        log.debug(f"[{self.config.name}] No links found with selector '{sel}'")
                 
                 html_count = 0
                 for link in links:
@@ -514,6 +527,7 @@ class ZoneRunner:
                         if any(x in href for x in ["/membre/", "/login", "/register", "facebook.com", "google.com"]):
                             continue
                         
+                        full_url = ""
                         if href.startswith("/"):
                             # Filter for actual ad links (usually follow a pattern)
                             if not re.search(r'/[^/]+-d\d+$', href):
@@ -525,13 +539,15 @@ class ZoneRunner:
                         else:
                             continue
 
-                        if full_url not in seen:
+                        if full_url and full_url not in seen:
                             seen.add(full_url)
                             urls.append(full_url)
                             html_count += 1
                 
                 # Check if extraction succeeded
                 if html_count == 0 and len(urls) == 0:
+                    log.error(f"[{self.config.name}] ZERO LISTINGS CRITICAL FAILURE on Page {page_number}")
+                    
                     # No listings extracted at all - this is a failure
                     if ("challenge" in result.html.lower() or "cloudflare" in result.html.lower()):
                         log.warning(f"[{self.config.name}] Blocked by Cloudflare on page {page_number}")
@@ -543,20 +559,20 @@ class ZoneRunner:
                     diag_path.parent.mkdir(exist_ok=True)
                     with open(diag_path, "w", encoding="utf-8") as f:
                         f.write(result.html)
-                    log.error(f"[{self.config.name}] Extraction failed for page {page_number}. HTML saved to {diag_path}")
+                    log.error(f"[{self.config.name}] HTML saved to {diag_path} for inspection")
                     
                     raise Exception("No listings extraction success")
                 
                 if html_count > 0:
                     log.debug(f"[{self.config.name}] Extracted {html_count} UNIQUE URLs via HTML Parsing")
                 
-                log.info(f"[{self.config.name}] Page {page_number} SUCCESS → Found {len(urls)} ads")
+                log.info(f"[{self.config.name}] Page {page_number} COMPLETE SUCCESS → Found {len(urls)} ads total")
                 if self.proxy_manager and proxy:
                     self.proxy_manager.report_success(proxy)
                 return urls
 
             except Exception as e:
-                log.error(f"[{self.config.name}] Error scraping page {page_number}: {e}")
+                log.error(f"[{self.config.name}] Error scraping page {page_number}: {e}", exc_info=True)
                 if self.proxy_manager:
                     if proxy:
                         self.proxy_manager.report_failure(proxy)
