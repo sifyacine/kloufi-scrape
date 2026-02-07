@@ -832,7 +832,7 @@ async def verify_proxy_subsystem(proxy_manager):
             log.info(f"Testing proxy connection via {proxy} (Attempt {i+1})...")
             
             try:
-                result = await crawl(check_url, proxy, context, magic=True)
+                result = await crawl(check_url, proxy, context)
                 
                 if result.success:
                     # Parse JSON to confirm masking
