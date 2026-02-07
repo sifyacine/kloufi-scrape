@@ -2,8 +2,37 @@ import asyncio
 import sys
 import os
 import json
+from bs4 import BeautifulSoup
+# ... (imports)
 
-# Add project root to path
+# ...
+
+        try:
+            # Run crawl with the proxy
+            # magic=True is handled inside crawler_runner.py, don't pass it here
+            result = await crawl(check_url, proxy, context)
+            
+            if result.success:
+                try:
+                    # httpbin returns JSON: { "origin": "1.2.3.4" }
+                    # Browser might wrap it in HTML <pre> tags
+                    raw_content = result.html
+                    if "<html" in raw_content or "<pre>" in raw_content:
+                        soup = BeautifulSoup(raw_content, "html.parser")
+                        text_content = soup.get_text(strip=True)
+                        # Ensure we only get the JSON part if there's extra text
+                        s_idx = text_content.find('{')
+                        e_idx = text_content.rfind('}') + 1
+                        if s_idx != -1 and e_idx != -1:
+                            text_content = text_content[s_idx:e_idx]
+                        data = json.loads(text_content)
+                    else:
+                        data = json.loads(raw_content)
+
+                    origin_ip = data.get("origin")
+                    print(f"✅ SUCCESS! Site sees IP: {origin_ip}")
+                    
+                    # Basic validation
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../../')))
 
 from scraper.proxy.proxy_sources import fetch_proxies
@@ -49,7 +78,20 @@ async def verify_proxy_masking():
             if result.success:
                 try:
                     # httpbin returns JSON: { "origin": "1.2.3.4" }
-                    data = json.loads(result.html)
+                    # Browser might wrap it in HTML <pre> tags
+                    raw_content = result.html
+                    if "<html" in raw_content or "<pre>" in raw_content:
+                        soup = BeautifulSoup(raw_content, "html.parser")
+                        text_content = soup.get_text(strip=True)
+                        # Ensure we only get the JSON part if there's extra text
+                        s_idx = text_content.find('{')
+                        e_idx = text_content.rfind('}') + 1
+                        if s_idx != -1 and e_idx != -1:
+                            text_content = text_content[s_idx:e_idx]
+                        data = json.loads(text_content)
+                    else:
+                        data = json.loads(raw_content)
+
                     origin_ip = data.get("origin")
                     print(f"✅ SUCCESS! Site sees IP: {origin_ip}")
                     
