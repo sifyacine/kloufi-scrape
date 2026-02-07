@@ -828,7 +828,11 @@ async def main_multizone():
     print("Fetching proxies...")
     proxies = await fetch_proxies()
     print(f"Fetched {len(proxies)} proxies.")
+    print(f"Fetched {len(proxies)} proxies.")
     proxy_manager = ProxyManager(proxies)
+    
+    # Verify proxies before starting
+    await verify_proxy_subsystem(proxy_manager)
     
     orchestrator = MultiZoneOrchestrator(proxy_manager)
     
