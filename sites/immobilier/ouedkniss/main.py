@@ -558,6 +558,14 @@ class ZoneRunner:
                         if self.proxy_manager and proxy:
                             self.proxy_manager.report_failure(proxy)
                     
+                    # Log the page title for clearer debugging
+                    try:
+                        soup_fail = BeautifulSoup(result.html, 'html.parser')
+                        page_title = soup_fail.title.string.strip() if soup_fail.title else "No Title"
+                        log.error(f"[{self.config.name}] FAILED PAGE TITLE: '{page_title}' (Size: {len(result.html)} bytes)")
+                    except Exception:
+                        pass
+
                     # Diagnostic: Save HTML on extraction failure
                     diag_path = Path(__file__).parent / "logs" / f"failed_page_{page_number}_{int(time.time())}.html"
                     diag_path.parent.mkdir(exist_ok=True)
@@ -565,7 +573,7 @@ class ZoneRunner:
                         f.write(result.html)
                     log.error(f"[{self.config.name}] HTML saved to {diag_path} for inspection")
                     
-                    raise Exception("No listings extraction success")
+                    raise Exception(f"Zero listings. Page Title: {page_title}")
                 
                 if html_count > 0:
                     log.debug(f"[{self.config.name}] Extracted {html_count} UNIQUE URLs via HTML Parsing")
