@@ -816,6 +816,61 @@ async def main_legacy():
     print("Check scraped_ouedkniss.jsonl and your Elasticsearch index")
 
 
+async def verify_proxy_subsystem(proxy_manager):
+    """Verifies that the proxy subsystem is working by fetching IP from httpbin."""
+    log.info("Verifying proxy subsystem...")
+    check_url = "https://httpbin.org/ip"
+    try:
+        if args.no_proxy:
+            log.info("Skipping proxy verification (running with --no-proxy)")
+            return
+
+        # Try up to 3 times to verify
+        for i in range(3):
+            proxy = proxy_manager.get_proxy("httpbin.org")
+            context = build_context()
+            log.info(f"Testing proxy connection via {proxy} (Attempt {i+1})...")
+            
+            try:
+                result = await crawl(check_url, proxy, context, magic=True)
+                
+                if result.success:
+                    # Parse JSON to confirm masking
+                    raw = result.html
+                    origin_ip = "Unknown"
+                    try:
+                        if "<html" in raw or "<pre>" in raw:
+                            soup = BeautifulSoup(raw, "html.parser")
+                            text = soup.get_text(strip=True)
+                            s = text.find('{')
+                            e = text.rfind('}') + 1
+                            if s != -1:
+                                data = json.loads(text[s:e])
+                                origin_ip = data.get("origin", "Unknown")
+                        else:
+                            data = json.loads(raw)
+                            origin_ip = data.get("origin", "Unknown")
+                    except Exception as e:
+                         log.debug(f"JSON parse error during verify: {e}")
+
+                    log.info(f"✅ PROXY VERIFICATION SUCCESS. External IP seen: {origin_ip}")
+                    return True
+                else:
+                    log.warning(f"⚠️ Proxy verification request failed (Status {result.status_code})")
+                    proxy_manager.report_failure(proxy)
+                    proxy_manager.rotate("httpbin.org")
+            except Exception as e:
+                 log.warning(f"⚠️ Proxy verification attempt failed: {e}")
+                 proxy_manager.rotate("httpbin.org")
+        
+        log.error("❌ All proxy verification attempts failed. Scraper might be blocked or proxies unhealthy.")
+        return False
+        
+    except Exception as e:
+        log.error(f"❌ Proxy verification exception: {e}")
+        return False
+
+
 async def main_multizone():
     """New multi-zone main function."""
     print("=" * 70)
