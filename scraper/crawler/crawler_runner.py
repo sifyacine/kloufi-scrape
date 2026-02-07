@@ -7,7 +7,9 @@ async def crawl(url, proxy, context, config=None, headless=True):
         browser_context=context,
         headless=headless
     ) as crawler:
-        result = await crawler.arun(url=url, config=config)
+        # Enable 'magic' mode for advanced anti-bot evasion
+        # This handles navigator.webdriver, stealth args, and more
+        result = await crawler.arun(url=url, config=config, magic=True)
         html = result.html
         if await has_captcha(html):
             raise Exception("CAPTCHA detected")
