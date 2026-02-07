@@ -43,7 +43,8 @@ async def verify_proxy_masking():
         
         try:
             # Run crawl with the proxy
-            result = await crawl(check_url, proxy, context, magic=True)
+            # magic=True is handled inside crawler_runner.py, don't pass it here
+            result = await crawl(check_url, proxy, context)
             
             if result.success:
                 try:
