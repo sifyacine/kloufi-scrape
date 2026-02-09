@@ -94,33 +94,18 @@ async def scrape_single_url(
     
     # JS for Proxyium Interaction + Detail Extraction Scrolling
     js_commands = [
+        "await new Promise(resolve => setTimeout(resolve, 10000));",
+        "localStorage.setItem('ok-auth-frame', JSON.stringify({ locale: 'fr' }));",
+        "document.cookie = 'ok-locale=fr; path=/; domain=.ouedkniss.com';",
+        "document.querySelector('button.fc-button.fc-cta-consent.fc-primary-button')?.click();",
+        f"document.getElementById('unique-form-control').value = '{target_url}{'&' if '?' in target_url else '?'}lang=fr';",
+        "document.querySelector('#web_proxy_form').submit();",
+        "await new Promise(resolve => setTimeout(resolve, 5000));",
+        "document.querySelector('button.fc-button.fc-cta-consent.fc-primary-button')?.click();",
         """
         (async () => {
             const wait = ms => new Promise(r => setTimeout(r, ms));
             
-            console.log('Bypassing Proxyium Consent...');
-            document.querySelector('button.fc-button.fc-cta-consent.fc-primary-button')?.click();
-            await wait(1000);
-
-            console.log('Typing URL...');
-            const input = document.getElementById('unique-form-control');
-            if (input) {
-                input.value = '""" + target_url + ("&" if "?" in target_url else "?") + """locale=fr';
-            }
-
-            console.log('Submitting Proxyium Form...');
-            const form = document.querySelector('#web_proxy_form');
-            if (form) {
-                form.submit();
-            }
-            
-            // Wait for redirect and for the proxied page to load
-            await wait(10000);
-
-            // Force French via LocalStorage and Cookies (Applied to proxied page)
-            localStorage.setItem('ok-auth-frame', JSON.stringify({ locale: 'fr' }));
-            document.cookie = "ok-locale=fr; domain=.ouedkniss.com; path=/; max-age=31536000";
-
             // Perform original scroll-to-user-info logic
             let maxScrollHeight = document.body.scrollHeight;
             let scrollStep = 300;
