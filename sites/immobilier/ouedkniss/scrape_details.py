@@ -18,9 +18,14 @@ debugging easier for developers:
 """
 
 try:
-    # Insert the shared insert2db module into the path.
-    sys.path.insert(1, '../../global')
-    from insert_scrape import insert_data_to_es
+    # Ensure project root is on sys.path, then import the shared insert2db module.
+    from pathlib import Path
+
+    ROOT_DIR = Path(__file__).resolve().parents[2]
+    if str(ROOT_DIR) not in sys.path:
+        sys.path.insert(0, str(ROOT_DIR))
+
+    from insert2db.insert_scrape import insert_data_to_es
 except ImportError:
 
     def insert_data_to_es(data, index):
