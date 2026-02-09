@@ -17,6 +17,17 @@ debugging easier for developers:
     short summaries so you can quickly see what worked and where data is missing.
 """
 
+#
+# LOCAL DEBUG OUTPUT TO `junk_test/`
+# ----------------------------------
+# Set this flag to False once you're confident in the scraper, or whenever you
+# don't want to generate local debug JSON files under the `junk_test` folder.
+# When True:
+#   - One JSONL line per listing is appended to `junk_test/scraped_ouedkniss.jsonl`
+#   - One pretty JSON file per listing is created in `junk_test/`
+#
+DEBUG_SAVE_LOCAL = True
+
 try:
     # Ensure project root is on sys.path, then import the shared insert2db module.
     from pathlib import Path
@@ -687,13 +698,15 @@ async def scrape_single_url(
                     f"[DETAIL][{zone_name}] Successfully parsed listing → "
                     f"{property_data['titre'][:80]!r}"
                 )
-                # Optionally append to JSONL and a pretty JSON file under junk_test/
-                save_to_json(property_data)
-                if ImmobilierUtils is not None:
-                    try:
-                        ImmobilierUtils.save_listing_file(property_data)
-                    except Exception as e:
-                        print(f"[DETAIL][{zone_name}] Failed to save listing file: {e}")
+                # Optional local debug saves (JSONL + pretty JSON) in `junk_test/`.
+                # Toggle with DEBUG_SAVE_LOCAL at the top of this file.
+                if DEBUG_SAVE_LOCAL:
+                    save_to_json(property_data)
+                    if ImmobilierUtils is not None:
+                        try:
+                            ImmobilierUtils.save_listing_file(property_data)
+                        except Exception as e:
+                            print(f"[DETAIL][{zone_name}] Failed to save listing file: {e}")
 
                 # Send to Elasticsearch immediately.
                 try:
