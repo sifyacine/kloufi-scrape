@@ -14,6 +14,8 @@ import sys
 import os
 import time
 import hashlib
+import base64
+from urllib.parse import urlparse, parse_qs, unquote
 from enum import Enum
 from dataclasses import dataclass, field
 from typing import Set, Optional, Dict, List
@@ -253,6 +255,27 @@ def get_proxyium_url(url: str) -> str:
     """Encodes a URL for Proxyium's gateway."""
     encoded = base64.b64encode(url.encode()).decode()
     return f"https://fr.proxyium.com/browse.php?u={encoded}&b=4"
+
+def unproxify_url(url: str) -> str:
+    """Decodes a Proxyium-encoded URL back to its original Ouedkniss form."""
+    if "proxyium.com" not in url:
+        return url
+    
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query)
+    
+    if 'u' in qs:
+        try:
+            encoded_val = qs['u'][0]
+            # Handle base64 padding issues if any
+            padding = len(encoded_val) % 4
+            if padding:
+                encoded_val += "=" * (4 - padding)
+            decoded = base64.b64decode(encoded_val.encode()).decode()
+            return decoded
+        except Exception:
+            return url
+    return url
 
 # ========================= ZONE RUNNER CLASS =========================
 class ZoneRunner:
@@ -507,28 +530,6 @@ class ZoneRunner:
                         log.info(f"[{self.config.name}] Page {page_number} -> Marker found: '{marker}' -> stopping")
                         return []
 
-from urllib.parse import urlparse, parse_qs, unquote
-
-def unproxify_url(url: str) -> str:
-    """Decodes a Proxyium-encoded URL back to its original Ouedkniss form."""
-    if "proxyium.com" not in url:
-        return url
-    
-    parsed = urlparse(url)
-    qs = parse_qs(parsed.query)
-    
-    if 'u' in qs:
-        try:
-            encoded_val = qs['u'][0]
-            # Handle base64 padding issues if any
-            padding = len(encoded_val) % 4
-            if padding:
-                encoded_val += "=" * (4 - padding)
-            decoded = base64.b64decode(encoded_val).decode()
-            return decoded
-        except Exception:
-            return url
-    return url
 
                 # Comprehensive list of selectors for Ouedkniss listing links
                 selectors = [
