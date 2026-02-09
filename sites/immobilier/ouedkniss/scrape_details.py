@@ -26,6 +26,12 @@ except ImportError:
     def insert_data_to_es(data, index):
         print(f"[Mock] there is a problem in saving data '{index}'")
 
+try:
+    # Shared real-estate helpers (normalization, saving, etc.).
+    from utils.immobilier import ImmobilierUtils
+except ImportError:
+    ImmobilierUtils = None
+
 
 # ------------------- JSON saver helper -------------------
 def save_to_json(data: dict, filename: str = "scraped_ouedkniss.jsonl"):
@@ -34,9 +40,13 @@ def save_to_json(data: dict, filename: str = "scraped_ouedkniss.jsonl"):
 
     This is mainly for debugging / offline inspection alongside Elasticsearch.
     """
-    with open(filename, "a", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False)
-        f.write("\n")  # JSON Lines format – one object per line
+    # Prefer the shared utility if available so everything lands under junk_test/
+    if ImmobilierUtils is not None:
+        ImmobilierUtils.save_to_json(data, filename)
+    else:
+        with open(filename, "a", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False)
+            f.write("\n")  # JSON Lines format – one object per line
 
 
 def parse_float_or_none(text):
@@ -212,8 +222,9 @@ async def scrape_single_url(
     )
 
     js_commands = [
-        # Give Proxyium time to load and stabilize.
-        "await new Promise(resolve => setTimeout(resolve, 10000));",
+        # Give Proxyium time to load and stabilize – kept moderate so we
+        # don't hold connections for too long.
+        "await new Promise(resolve => setTimeout(resolve, 7000));",
         # Force French locale in LocalStorage and Cookies (best effort).
         "localStorage.setItem('ok-auth-frame', JSON.stringify({ locale: 'fr' }));",
         "document.cookie = 'ok-locale=fr; path=/; domain=.ouedkniss.com';",
@@ -223,7 +234,7 @@ async def scrape_single_url(
         f"document.getElementById('unique-form-control').value = '{target_url}{'&' if '?' in target_url else '?'}lang=fr';",
         "document.querySelector('#web_proxy_form').submit();",
         # Allow proxied page to render.
-        "await new Promise(resolve => setTimeout(resolve, 5000));",
+        "await new Promise(resolve => setTimeout(resolve, 4000));",
         "document.querySelector('button.fc-button.fc-cta-consent.fc-primary-button')?.click();",
         # Scroll to contact block so that lazy-loaded content has a chance to appear.
         """
@@ -251,14 +262,16 @@ async def scrape_single_url(
         })();
         """,
         # Final wait to ensure lazy-loaded pieces are rendered.
-        "await new Promise(resolve => setTimeout(resolve, 5000));",
+        "await new Promise(resolve => setTimeout(resolve, 4000));",
     ]
 
     config = CrawlerRunConfig(
         cache_mode=CacheMode.BYPASS,
         js_code=js_commands,
-        delay_before_return_html=30,
-        page_timeout=120_000,
+        # Slightly lower delay/timeout to reduce long-lived sessions on Proxyium,
+        # while still being generous for slow pages.
+        delay_before_return_html=20,
+        page_timeout=110_000,
         wait_until="domcontentloaded",
     )
 
@@ -560,13 +573,18 @@ async def scrape_single_url(
                 if not contact[k]:
                     contact[k] = []
 
+            now_iso = datetime.now().isoformat()
+
             property_data = {
                 "titre": title,
                 "url": target_url,
+                # Versioning: unique document/version id based on URL and crawl date.
+                # This is stored as a field; Elasticsearch will still use its own _id.
+                "id": f"{target_url}|{now_iso}",
                 "site_origine": "Ouedkniss.com",
                 "categorie": "immobilier",
                 "category": "immobilier",
-                "date_crawl": datetime.now().isoformat(),
+                "date_crawl": now_iso,
                 "prix": f"{price_value} {price_unit}"
                 if price_value and price_unit
                 else "",
@@ -655,7 +673,7 @@ async def scrape_single_url(
                 "status": "200",
                 "contact": contact,
                 "as_photo": as_photo,
-                "date_verif": datetime.now().isoformat(),
+                "date_verif": now_iso,
                 "as_prix": "Avec prix" if price_value else "Sans prix",
             }
 
@@ -664,8 +682,13 @@ async def scrape_single_url(
                     f"[DETAIL][{zone_name}] Successfully parsed listing → "
                     f"{property_data['titre'][:80]!r}"
                 )
-                # Optionally append to JSONL.
+                # Optionally append to JSONL and a pretty JSON file under junk_test/
                 save_to_json(property_data)
+                if ImmobilierUtils is not None:
+                    try:
+                        ImmobilierUtils.save_listing_file(property_data)
+                    except Exception as e:
+                        print(f"[DETAIL][{zone_name}] Failed to save listing file: {e}")
 
                 # Send to Elasticsearch immediately.
                 try:

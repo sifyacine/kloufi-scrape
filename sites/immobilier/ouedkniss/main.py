@@ -43,7 +43,8 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEDUP_CACHE_PATH = os.path.join(BASE_DIR, "scraped_urls_cache.json")
 
 # How many listing pages to fetch in one batch per zone cycle.
-LISTING_BATCH_SIZE = 10
+# Note: we keep this modest to avoid overloading Proxyium and Ouedkniss.
+LISTING_BATCH_SIZE = 5
 
 
 @dataclass
@@ -69,10 +70,11 @@ ZONES: Dict[str, ZoneConfig] = {
         name="HOT",
         internal_name="REALTIME",
         start_page=1,
-        # NOTE: We use pages 1–5 for HOT to aggressively cover fresh content.
-        # You can change this to 1 only if you want ultra-lightweight mode.
-        end_page=5,
-        interval_seconds=600,   # every 10 minutes in continuous mode
+        # HOT zone only watches the very first page to minimize load and
+        # maximize freshness; WARM/COLD cover the deep pages.
+        end_page=1,
+        # Realtime monitoring: run every 60 seconds in continuous mode.
+        interval_seconds=60,
         detail_workers=5,
         listing_concurrency=2,
         max_retries=2,
@@ -87,7 +89,8 @@ ZONES: Dict[str, ZoneConfig] = {
         end_page=None,          # full crawl
         interval_seconds=7200,  # every 2 hours
         detail_workers=10,
-        listing_concurrency=3,
+        # Keep listing concurrency low to reduce pressure on Proxyium.
+        listing_concurrency=1,
         max_retries=3,
         retry_delay=3.0,
         throttle_delay=0.2,
@@ -100,7 +103,8 @@ ZONES: Dict[str, ZoneConfig] = {
         end_page=None,           # full crawl
         interval_seconds=604800, # once per week
         detail_workers=5,
-        listing_concurrency=2,
+        # Slow, deep backfill – very gentle on Proxyium.
+        listing_concurrency=1,
         max_retries=5,
         retry_delay=5.0,
         throttle_delay=0.5,
@@ -183,23 +187,26 @@ async def scrape_listing_page(page_number: int) -> List[str]:
     target_url = f"{TARGET_URL_BASE}{page_number}" if page_number > 1 else f"{TARGET_URL_BASE}"
 
     js_commands = [
-        # Give Proxyium time to fully load.
-        "await new Promise(resolve => setTimeout(resolve, 10000));",
+        # Give Proxyium a bit of time to fully load (kept modest to avoid
+        # long sessions while still being reliable).
+        "await new Promise(resolve => setTimeout(resolve, 5000));",
         "localStorage.setItem('ok-auth-frame', JSON.stringify({ locale: 'fr' }));",
         "document.cookie = 'ok-locale=fr; path=/; domain=.ouedkniss.com';",
         "document.querySelector('button.fc-button.fc-cta-consent.fc-primary-button')?.click();",
         # Inject the real Ouedkniss URL into Proxyium form.
         f"document.getElementById('unique-form-control').value = '{target_url}{'&' if '?' in target_url else '?'}lang=fr';",
         "document.querySelector('#web_proxy_form').submit();",
-        # Allow proxied page to render.
-        "await new Promise(resolve => setTimeout(resolve, 5000));",
+        # Allow proxied page to render most content.
+        "await new Promise(resolve => setTimeout(resolve, 3000));",
         "document.querySelector('button.fc-button.fc-cta-consent.fc-primary-button')?.click();",
     ]
 
     config = CrawlerRunConfig(
         js_code=js_commands,
-        delay_before_return_html=30,
-        page_timeout=120_000,
+        # Shorter delay/timeout so we don't keep Proxyium sessions open
+        # longer than necessary.
+        delay_before_return_html=15,
+        page_timeout=90_000,
         wait_until="domcontentloaded",
     )
 
@@ -308,8 +315,16 @@ async def listing_producer_for_zone(
                     await url_queue.put(url)
                     continue
 
+                is_hot_zone = zone.name == "HOT"
+
+                # For WARM/COLD we skip already-seen IDs (global dedup).
+                # For HOT we *do not* skip: we always enqueue the URL so that
+                # realtime monitoring never misses a listing, even if it was
+                # already seen previously. We still record the ID so WARM/COLD
+                # runs can skip redundant work.
                 if listing_id in global_seen_ids:
-                    # Already processed in any zone / previous run.
+                    if is_hot_zone:
+                        await url_queue.put(url)
                     continue
 
                 global_seen_ids.add(listing_id)
