@@ -1,9 +1,15 @@
+import sys
+import os
+
+# Add the project root to sys.path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
 import asyncio
 import tldextract
-from proxy.proxy_sources import fetch_proxies
-from proxy.proxy_manager import ProxyManager
-from crawler.crawler_runner import crawl
-from browser.fingerprint import build_context
+from scraper.proxy.proxy_sources import fetch_proxies
+from scraper.proxy.proxy_manager import ProxyManager
+from scraper.crawler.crawler_runner import crawl
+from scraper.browser.fingerprint import build_context
 
 async def main():
     urls = ["https://www.ouedkniss.com/terrain-vente-alger-birkhadem-algerie-d48585919"]
