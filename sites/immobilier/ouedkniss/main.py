@@ -30,8 +30,6 @@ from sites.immobilier.ouedkniss.scrape_details import scrape_single_url
 from utils.immobilier import ImmobilierUtils
 from datetime import datetime
 
-from scraper.proxy.proxy_sources import fetch_proxies
-from scraper.proxy.proxy_manager import ProxyManager
 from scraper.crawler.crawler_runner import crawl
 from scraper.browser.fingerprint import build_context
 
@@ -252,9 +250,9 @@ counter = ScrapeCounter()
 import base64
 
 def get_proxyium_url(url: str) -> str:
-    """Encodes a URL for Proxyium's gateway."""
+    """Encodes a URL for Proxyium's gateway (Direct URL fallback)."""
     encoded = base64.b64encode(url.encode()).decode()
-    return f"https://fr.proxyium.com/browse.php?u={encoded}&b=4"
+    return f"https://proxyium.com/browse.php?u={encoded}&b=4"
 
 def unproxify_url(url: str) -> str:
     """Decodes a Proxyium-encoded URL back to its original Ouedkniss form."""
@@ -284,7 +282,7 @@ class ZoneRunner:
     Each zone operates independently with its own concurrency settings.
     """
     
-    def __init__(self, config: ZoneConfig, proxy_manager: ProxyManager, deduplicator: URLDeduplicator):
+    def __init__(self, config: ZoneConfig, proxy_manager=None, deduplicator=None):
         self.config = config
         self.proxy_manager = proxy_manager
         self.deduplicator = deduplicator
@@ -405,48 +403,43 @@ class ZoneRunner:
         log.info(f"[{self.config.name}] Producer finished. Scraped {self._pages_scraped} pages")
     
     async def _scrape_listing_page(self, page_number: int) -> List[str]:
-        """Scrape a single listing page and return URLs."""
-        base_target = f"{TARGET_URL_BASE}{page_number}" if page_number > 1 else TARGET_URL_BASE
+        """Scrape a single listing page via Proxyium Interaction."""
+        target_url = f"{TARGET_URL_BASE}{page_number}" if page_number > 1 else TARGET_URL_BASE
         
-        # Redirect through Proxyium Gateway
-        target_url = get_proxyium_url(base_target)
+        # We start at Proxyium homepage
+        proxy_gateway = "https://proxyium.com/"
         
-        log.info(f"[{self.config.name}] PROXYIUM ROUTE: {base_target} -> {target_url}")
+        log.info(f"[{self.config.name}] PROXYIUM INTERACTION: {target_url} via {proxy_gateway}")
 
         js_commands = [
             """
             (async () => {
-                console.log("Checking for Proxyium Landing Page / Terms...");
-                
                 const wait = ms => new Promise(r => setTimeout(r, ms));
-
-                // 1. Handle Proxyium "I Agree" button if it exists
-                const agreeButton = Array.from(document.querySelectorAll('button, a')).find(b => 
-                    b.textContent.toLowerCase().includes('agree') || 
-                    b.textContent.toLowerCase().includes('accept') ||
-                    b.id === 'proceed-button'
-                );
                 
-                if (agreeButton) {
-                    console.log("Found Proxyium Agreement Button. Clicking...");
-                    agreeButton.click();
-                    await wait(3000); // Wait for redirect
+                console.log('Bypassing Proxyium Consent...');
+                document.querySelector('button.fc-button.fc-cta-consent.fc-primary-button')?.click();
+                await wait(1000);
+
+                console.log('Typing URL...');
+                const input = document.getElementById('unique-form-control');
+                if (input) {
+                    input.value = '""" + target_url + ("&" if "?" in target_url else "?") + """locale=fr';
                 }
 
-                // 2. Force French via LocalStorage and Cookies (Applied to proxied page)
+                console.log('Submitting Proxyium Form...');
+                const form = document.querySelector('#web_proxy_form');
+                if (form) {
+                    form.submit();
+                }
+                
+                // Wait for redirect and for the proxied page to become readable
+                await wait(10000);
+                
+                // Force French inside the proxied page
                 localStorage.setItem('ok-auth-frame', JSON.stringify({ locale: 'fr' }));
                 document.cookie = "ok-locale=fr; domain=.ouedkniss.com; path=/; max-age=31536000";
-                
-                // 3. Detect Arabic and Reload if necessary
-                const isRTL = document.body.dir === 'rtl' || document.documentElement.dir === 'rtl';
-                if (isRTL) {
-                    console.log("Arabic detected! Attempting reload...");
-                    window.location.href = window.location.href.split('?')[0] + '?locale=fr';
-                    await wait(5000);
-                    return;
-                }
 
-                // 4. Stepped Scroll to trigger all lazy loads
+                // Stepped Scroll to trigger all lazy loads
                 for (let i = 0; i < 15; i++) {
                     window.scrollBy(0, 800);
                     await wait(300);
@@ -454,35 +447,25 @@ class ZoneRunner:
                 window.scrollTo(0, document.body.scrollHeight);
                 await wait(2000);
             })();
-            """,
-            "await new Promise(r => setTimeout(r, 5000));"
+            """
         ]
-        
 
         config = CrawlerRunConfig(
             cache_mode=CacheMode.BYPASS,
-            page_timeout=60000,
+            page_timeout=120000,
             wait_until="domcontentloaded",
             js_code=js_commands,
-            delay_before_return_html=10
+            delay_before_return_html=30
         )
 
-        max_retries = 5
+        max_retries = 3
         for attempt in range(1, max_retries + 1):
-            proxy = None
-            if self.proxy_manager and not args.no_proxy:
-                try:
-                    proxy = self.proxy_manager.get_proxy("ouedkniss.com")
-                except Exception:
-                    log.warning(f"[{self.config.name}] No proxies available for listing.")
-            elif args.no_proxy:
-                log.info(f"[{self.config.name}] Proxy usage disabled via --no-proxy")
-
             context = build_context()
 
             try:
-                log.info(f"[{self.config.name}] Page {page_number} (Attempt {attempt}) - Proxy: {proxy}")
-                result = await crawl(target_url, proxy, context, config=config, headless=True)
+                log.info(f"[{self.config.name}] Page {page_number} (Attempt {attempt}) - Using PROXYIUM Gateway")
+                # Navigate to Proxyium homepage first
+                result = await crawl(proxy_gateway, None, context, config=config, headless=True)
                 
                 if not result.success:
                     log.warning(f"[{self.config.name}] Failed Page {page_number} (Status: {result.status_code})")
@@ -614,16 +597,10 @@ class ZoneRunner:
                     log.debug(f"[{self.config.name}] Extracted {html_count} UNIQUE URLs via HTML Parsing")
                 
                 log.info(f"[{self.config.name}] Page {page_number} COMPLETE SUCCESS → Found {len(urls)} ads total")
-                if self.proxy_manager and proxy:
-                    self.proxy_manager.report_success(proxy)
                 return urls
 
             except Exception as e:
                 log.error(f"[{self.config.name}] Error scraping page {page_number}: {e}", exc_info=True)
-                if self.proxy_manager:
-                    if proxy:
-                        self.proxy_manager.report_failure(proxy)
-                    self.proxy_manager.rotate("ouedkniss.com")
                 await asyncio.sleep(1)
         
         log.warning(f"[{self.config.name}] Failed to scrape page {page_number} after {max_retries} attempts")
@@ -672,7 +649,7 @@ class MultiZoneOrchestrator:
     Manages scheduling, resource allocation, and graceful shutdown.
     """
     
-    def __init__(self, proxy_manager: ProxyManager):
+    def __init__(self, proxy_manager=None):
         self.proxy_manager = proxy_manager
         self.deduplicator = url_deduplicator
         self.zones: Dict[ZoneType, ZoneRunner] = {}
@@ -923,16 +900,7 @@ async def main_multizone():
     zone_arg = args.zone.lower()
     continuous = args.continuous
     
-    print("Fetching proxies...")
-    proxies = await fetch_proxies()
-    print(f"Fetched {len(proxies)} proxies.")
-    print(f"Fetched {len(proxies)} proxies.")
-    proxy_manager = ProxyManager(proxies)
-    
-    # Verify proxies before starting
-    await verify_proxy_subsystem(proxy_manager)
-    
-    orchestrator = MultiZoneOrchestrator(proxy_manager)
+    orchestrator = MultiZoneOrchestrator(None)
     
     if zone_arg == "all":
         for zone_type in ZoneType:

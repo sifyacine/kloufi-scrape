@@ -67,11 +67,11 @@ ZONE_SETTINGS = {
 import base64
 
 def get_proxyium_url(url: str) -> str:
-    """Encodes a URL for Proxyium's gateway."""
+    """Encodes a URL for Proxyium's gateway (Direct URL fallback)."""
     if "proxyium.com" in url:
         return url
     encoded = base64.b64encode(url.encode()).decode()
-    return f"https://fr.proxyium.com/browse.php?u={encoded}&b=4"
+    return f"https://proxyium.com/browse.php?u={encoded}&b=4"
 
 async def scrape_single_url(
     target_url: str, 
@@ -81,14 +81,7 @@ async def scrape_single_url(
     zone: Optional[str] = None
 ):
     """
-    Scrape a single property URL and extract all relevant data.
-    
-    Args:
-        target_url: The property listing URL to scrape
-        proxy_manager: Optional proxy manager for rotation
-        max_retries: Maximum retry attempts (overridden by zone settings if zone provided)
-        retry_delay: Delay between retries (overridden by zone settings if zone provided)
-        zone: Zone identifier ('hot', 'warm', 'cold') for zone-aware settings
+    Scrape a single property URL via Proxyium interaction.
     """
     # Apply zone-specific settings if zone is provided
     zone_config = ZONE_SETTINGS.get(zone, ZONE_SETTINGS["default"])
@@ -96,45 +89,39 @@ async def scrape_single_url(
     effective_retry_delay = zone_config["retry_delay"]
     delay_before_html = zone_config["delay_before_html"]
     
-    # Allow explicit overrides to take precedence
-    if max_retries != 3:  # Non-default value passed
-        effective_max_retries = max_retries
-    if retry_delay != 5:  # Non-default value passed
-        effective_retry_delay = retry_delay
+    # We start at Proxyium homepage
+    proxy_gateway = "https://proxyium.com/"
     
-    # JS for scrolling to load dynamic content (User Info)
+    # JS for Proxyium Interaction + Detail Extraction Scrolling
     js_commands = [
         """
         (async () => {
             const wait = ms => new Promise(r => setTimeout(r, ms));
-            console.log("Checking for Proxyium Landing Page / Terms...");
-
-            // 1. Handle Proxyium "I Agree" button if it exists
-            const agreeButton = Array.from(document.querySelectorAll('button, a')).find(b => 
-                b.textContent.toLowerCase().includes('agree') || 
-                b.textContent.toLowerCase().includes('accept') ||
-                b.id === 'proceed-button'
-            );
             
-            if (agreeButton) {
-                console.log("Found Proxyium Agreement Button. Clicking...");
-                agreeButton.click();
-                await wait(3000); // Wait for redirect
+            console.log('Bypassing Proxyium Consent...');
+            document.querySelector('button.fc-button.fc-cta-consent.fc-primary-button')?.click();
+            await wait(1000);
+
+            console.log('Typing URL...');
+            const input = document.getElementById('unique-form-control');
+            if (input) {
+                input.value = '""" + target_url + ("&" if "?" in target_url else "?") + """locale=fr';
             }
 
-            // 2. Force French via LocalStorage and Cookies (Applied to proxied page)
+            console.log('Submitting Proxyium Form...');
+            const form = document.querySelector('#web_proxy_form');
+            if (form) {
+                form.submit();
+            }
+            
+            // Wait for redirect and for the proxied page to load
+            await wait(10000);
+
+            // Force French via LocalStorage and Cookies (Applied to proxied page)
             localStorage.setItem('ok-auth-frame', JSON.stringify({ locale: 'fr' }));
             document.cookie = "ok-locale=fr; domain=.ouedkniss.com; path=/; max-age=31536000";
 
-            // 3. Detect Arabic and Reload if necessary
-            const isRTL = document.body.dir === 'rtl' || document.documentElement.dir === 'rtl';
-            if (isRTL) {
-                console.log("Arabic detected! Attempting reload...");
-                window.location.href = window.location.href.split('?')[0] + '?locale=fr';
-                await wait(5000);
-            }
-
-            // 4. Perform original scroll-to-user-info logic
+            // Perform original scroll-to-user-info logic
             let maxScrollHeight = document.body.scrollHeight;
             let scrollStep = 300;
             let currentScroll = 0;
@@ -151,14 +138,14 @@ async def scrape_single_url(
                 maxScrollHeight = document.body.scrollHeight;
             }
 
-            // 5. Click Menu if found (extra safety)
+            // Click Menu if found (extra safety)
             const menuBtn = document.querySelector('button[aria-label="Menu"], button[aria-label="القائمة"], button[aria-label="قائمة"]');
             if (menuBtn) {
                 menuBtn.click();
                 await wait(1000);
             }
 
-            // 6. Click FR button directly
+            // Click FR button directly
             const frBtn = Array.from(document.querySelectorAll('button')).find(b => 
                 b.textContent.trim() === 'FR' || 
                 b.getAttribute('aria-label') === 'Français'
@@ -168,38 +155,28 @@ async def scrape_single_url(
                 await wait(2000);
             }
         })();
-        """,
-        "await new Promise(resolve => setTimeout(resolve, 1000));"
+        """
     ]
 
     config = CrawlerRunConfig(
         cache_mode=CacheMode.BYPASS, 
         js_code=js_commands, 
-        delay_before_return_html=delay_before_html,
-        page_timeout=60000, 
+        delay_before_return_html=30,
+        page_timeout=120000, 
         wait_until="domcontentloaded"
     )
 
     zone_prefix = f"[{zone.upper()}] " if zone else ""
 
     for attempt in range(effective_max_retries):
-        proxy = None
-        # We disable traditional rotation when using Proxyium as a gateway
-        # but keep building context for fingerprint variety
         context = build_context()
-        
-        # Transform Ouedkniss URL to Proxyium URL
-        proxied_url = get_proxyium_url(target_url)
-        
         print(f"{zone_prefix}[{datetime.now().time()}] Scraping via PROXYIUM: {target_url} (Attempt {attempt+1}/{effective_max_retries})")
 
         try:
-            # Direct crawl using the new scraper runner
-            result = await crawl(proxied_url, None, context, config=config, headless=True)
+            # Direct crawl using the new scraper runner, starting at Proxyium homepage
+            result = await crawl(proxy_gateway, None, context, config=config, headless=True)
             
             if result.success:
-                if proxy_manager and proxy:
-                    proxy_manager.report_success(proxy)
                 soup = BeautifulSoup(result.html, "html.parser")
 
                 title = ImmobilierUtils.extract_text_or_default(
@@ -548,10 +525,6 @@ async def scrape_single_url(
 
         except Exception as e:
             print(f"{zone_prefix}Internal Crawl Error for {target_url}: {e}")
-            if proxy_manager:
-                if proxy:
-                    proxy_manager.report_failure(proxy)
-                proxy_manager.rotate("ouedkniss.com")
 
         # Zone-aware retry delay
         await asyncio.sleep(effective_retry_delay)
