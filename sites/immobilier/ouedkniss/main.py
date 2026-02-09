@@ -247,6 +247,13 @@ class ScrapeCounter:
 counter = ScrapeCounter()
 
 
+import base64
+
+def get_proxyium_url(url: str) -> str:
+    """Encodes a URL for Proxyium's gateway."""
+    encoded = base64.b64encode(url.encode()).decode()
+    return f"https://fr.proxyium.com/browse.php?u={encoded}&b=4"
+
 # ========================= ZONE RUNNER CLASS =========================
 class ZoneRunner:
     """
@@ -336,7 +343,7 @@ class ZoneRunner:
             if self.config.end_page and page > self.config.end_page:
                 log.info(f"[{self.config.name}] Reached end page {self.config.end_page}")
                 break
-            
+        
             try:
                 urls = await self._scrape_listing_page(page)
                 
@@ -377,53 +384,46 @@ class ZoneRunner:
     async def _scrape_listing_page(self, page_number: int) -> List[str]:
         """Scrape a single listing page and return URLs."""
         base_target = f"{TARGET_URL_BASE}{page_number}" if page_number > 1 else TARGET_URL_BASE
-        target_url = base_target
         
-        log.info(f"[{self.config.name}] STARTING SCRAPE for Page {page_number} -> URL: {target_url}")
+        # Redirect through Proxyium Gateway
+        target_url = get_proxyium_url(base_target)
+        
+        log.info(f"[{self.config.name}] PROXYIUM ROUTE: {base_target} -> {target_url}")
 
         js_commands = [
             """
             (async () => {
-                console.log("Starting Locale Enforcement...");
+                console.log("Checking for Proxyium Landing Page / Terms...");
+                
+                const wait = ms => new Promise(r => setTimeout(r, ms));
 
-                // 1. Force French via LocalStorage and Cookies
+                // 1. Handle Proxyium "I Agree" button if it exists
+                const agreeButton = Array.from(document.querySelectorAll('button, a')).find(b => 
+                    b.textContent.toLowerCase().includes('agree') || 
+                    b.textContent.toLowerCase().includes('accept') ||
+                    b.id === 'proceed-button'
+                );
+                
+                if (agreeButton) {
+                    console.log("Found Proxyium Agreement Button. Clicking...");
+                    agreeButton.click();
+                    await wait(3000); // Wait for redirect
+                }
+
+                // 2. Force French via LocalStorage and Cookies (Applied to proxied page)
                 localStorage.setItem('ok-auth-frame', JSON.stringify({ locale: 'fr' }));
                 document.cookie = "ok-locale=fr; domain=.ouedkniss.com; path=/; max-age=31536000";
                 
-                // Helper to wait for elements
-                const wait = ms => new Promise(r => setTimeout(r, ms));
-                
-                // 2. Detect Arabic and Reload if necessary
+                // 3. Detect Arabic and Reload if necessary
                 const isRTL = document.body.dir === 'rtl' || document.documentElement.dir === 'rtl';
-                const isArabicLang = document.documentElement.lang === 'ar';
-                const hasArabicTitle = /[\u0600-\u06FF]/.test(document.title);
-                
-                if (isRTL || isArabicLang || hasArabicTitle) {
-                    console.log("Arabic detected! Reloading with forced locale...");
-                    document.cookie = "ok-locale=fr; domain=.ouedkniss.com; path=/; max-age=31536000";
+                if (isRTL) {
+                    console.log("Arabic detected! Attempting reload...");
                     window.location.href = window.location.href.split('?')[0] + '?locale=fr';
                     await wait(5000);
                     return;
                 }
 
-                // 3. Click Menu if found (extra safety)
-                const menuBtn = document.querySelector('button[aria-label="Menu"], button[aria-label="القائمة"], button[aria-label="قائمة"]');
-                if (menuBtn) {
-                    menuBtn.click();
-                    await wait(1000);
-                }
-                
-                // 4. Click FR button directly if visible
-                const frBtn = Array.from(document.querySelectorAll('button, a')).find(b => 
-                    b.textContent.trim().toUpperCase() === 'FR' || 
-                    b.getAttribute('aria-label') === 'Français'
-                );
-                if (frBtn) {
-                    frBtn.click();
-                    await wait(2000);
-                }
-                
-                // 5. Stepped Scroll to trigger all lazy loads
+                // 4. Stepped Scroll to trigger all lazy loads
                 for (let i = 0; i < 15; i++) {
                     window.scrollBy(0, 800);
                     await wait(300);
@@ -507,6 +507,29 @@ class ZoneRunner:
                         log.info(f"[{self.config.name}] Page {page_number} -> Marker found: '{marker}' -> stopping")
                         return []
 
+from urllib.parse import urlparse, parse_qs, unquote
+
+def unproxify_url(url: str) -> str:
+    """Decodes a Proxyium-encoded URL back to its original Ouedkniss form."""
+    if "proxyium.com" not in url:
+        return url
+    
+    parsed = urlparse(url)
+    qs = parse_qs(parsed.query)
+    
+    if 'u' in qs:
+        try:
+            encoded_val = qs['u'][0]
+            # Handle base64 padding issues if any
+            padding = len(encoded_val) % 4
+            if padding:
+                encoded_val += "=" * (4 - padding)
+            decoded = base64.b64decode(encoded_val).decode()
+            return decoded
+        except Exception:
+            return url
+    return url
+
                 # Comprehensive list of selectors for Ouedkniss listing links
                 selectors = [
                     "a.o-announ-card-content", 
@@ -529,6 +552,9 @@ class ZoneRunner:
                 for link in links:
                     href = link.get("href")
                     if href:
+                        # Un-proxify if URL was rewritten by Proxyium
+                        href = unproxify_url(href)
+
                         # Skip social or auth links
                         if any(x in href for x in ["/membre/", "/login", "/register", "facebook.com", "google.com"]):
                             continue
@@ -540,7 +566,7 @@ class ZoneRunner:
                                 if "/immobilier-" in href: continue 
                             
                             full_url = f"https://www.ouedkniss.com{href}"
-                        elif href.startswith("https://www.ouedkniss.com"):
+                        elif "ouedkniss.com" in href:
                             full_url = href
                         else:
                             continue
@@ -555,7 +581,9 @@ class ZoneRunner:
                     log.error(f"[{self.config.name}] ZERO LISTINGS CRITICAL FAILURE on Page {page_number}")
                     
                     # No listings extracted at all - this is a failure
-                    if ("challenge" in result.html.lower() or "cloudflare" in result.html.lower()):
+                    # Note: We check specifically for Cloudflare or Challenge in the body content
+                    content_lower = result.html.lower()
+                    if ("challenge" in content_lower or "cloudflare" in content_lower):
                         log.warning(f"[{self.config.name}] Blocked by Cloudflare on page {page_number}")
                         if self.proxy_manager and proxy:
                             self.proxy_manager.report_failure(proxy)
@@ -564,6 +592,10 @@ class ZoneRunner:
                     try:
                         soup_fail = BeautifulSoup(result.html, 'html.parser')
                         page_title = soup_fail.title.string.strip() if soup_fail.title else "No Title"
+                        # If the title is still Proxyium, the terms weren't bypassed
+                        if "Proxyium" in page_title:
+                            log.error(f"[{self.config.name}] STUCK ON PROXYIUM LANDING PAGE.")
+                        
                         log.error(f"[{self.config.name}] FAILED PAGE TITLE: '{page_title}' (Size: {len(result.html)} bytes)")
                     except Exception:
                         pass

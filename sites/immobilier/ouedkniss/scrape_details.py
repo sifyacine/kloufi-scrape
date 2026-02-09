@@ -64,6 +64,15 @@ ZONE_SETTINGS = {
 }
 
 
+import base64
+
+def get_proxyium_url(url: str) -> str:
+    """Encodes a URL for Proxyium's gateway."""
+    if "proxyium.com" in url:
+        return url
+    encoded = base64.b64encode(url.encode()).decode()
+    return f"https://fr.proxyium.com/browse.php?u={encoded}&b=4"
+
 async def scrape_single_url(
     target_url: str, 
     proxy_manager=None, 
@@ -97,22 +106,35 @@ async def scrape_single_url(
     js_commands = [
         """
         (async () => {
-            // 1. Force French via LocalStorage and Cookies
+            const wait = ms => new Promise(r => setTimeout(r, ms));
+            console.log("Checking for Proxyium Landing Page / Terms...");
+
+            // 1. Handle Proxyium "I Agree" button if it exists
+            const agreeButton = Array.from(document.querySelectorAll('button, a')).find(b => 
+                b.textContent.toLowerCase().includes('agree') || 
+                b.textContent.toLowerCase().includes('accept') ||
+                b.id === 'proceed-button'
+            );
+            
+            if (agreeButton) {
+                console.log("Found Proxyium Agreement Button. Clicking...");
+                agreeButton.click();
+                await wait(3000); // Wait for redirect
+            }
+
+            // 2. Force French via LocalStorage and Cookies (Applied to proxied page)
             localStorage.setItem('ok-auth-frame', JSON.stringify({ locale: 'fr' }));
             document.cookie = "ok-locale=fr; domain=.ouedkniss.com; path=/; max-age=31536000";
 
-            // 2. Detect Arabic and Reload if necessary
+            // 3. Detect Arabic and Reload if necessary
             const isRTL = document.body.dir === 'rtl' || document.documentElement.dir === 'rtl';
-            const isArabicLang = document.documentElement.lang === 'ar';
-            const hasArabicTitle = /[\u0600-\u06FF]/.test(document.title);
-            
-            if (isRTL || isArabicLang || hasArabicTitle) {
-                console.log("Arabic detected! Reloading with forced locale...");
-                window.location.reload();
-                await new Promise(r => setTimeout(r, 5000));
+            if (isRTL) {
+                console.log("Arabic detected! Attempting reload...");
+                window.location.href = window.location.href.split('?')[0] + '?locale=fr';
+                await wait(5000);
             }
 
-            // 3. Perform original scroll-to-user-info logic
+            // 4. Perform original scroll-to-user-info logic
             let maxScrollHeight = document.body.scrollHeight;
             let scrollStep = 300;
             let currentScroll = 0;
@@ -125,25 +147,25 @@ async def scrape_single_url(
                 }
                 currentScroll += scrollStep;
                 window.scrollBy(0, scrollStep);
-                await new Promise(resolve => setTimeout(resolve, 500));  
+                await wait(500);  
                 maxScrollHeight = document.body.scrollHeight;
             }
 
-            // 4. Click Menu if found (extra safety)
+            // 5. Click Menu if found (extra safety)
             const menuBtn = document.querySelector('button[aria-label="Menu"], button[aria-label="القائمة"], button[aria-label="قائمة"]');
             if (menuBtn) {
                 menuBtn.click();
-                await new Promise(r => setTimeout(r, 1000));
+                await wait(1000);
             }
 
-            // 5. Click FR button directly
+            // 6. Click FR button directly
             const frBtn = Array.from(document.querySelectorAll('button')).find(b => 
                 b.textContent.trim() === 'FR' || 
                 b.getAttribute('aria-label') === 'Français'
             );
             if (frBtn) {
                 frBtn.click();
-                await new Promise(r => setTimeout(r, 2000));
+                await wait(2000);
             }
         })();
         """,
@@ -162,22 +184,18 @@ async def scrape_single_url(
 
     for attempt in range(effective_max_retries):
         proxy = None
-        if proxy_manager:
-            try:
-                proxy = proxy_manager.get_proxy("ouedkniss.com")
-            except Exception:
-                print(f"{zone_prefix}No proxies available.")
-        
+        # We disable traditional rotation when using Proxyium as a gateway
+        # but keep building context for fingerprint variety
         context = build_context()
-        print(f"{zone_prefix}[{datetime.now().time()}] Scraping {target_url} | Proxy: {proxy} (Attempt {attempt+1}/{effective_max_retries})")
-
-        # Append locale=fr to ensure French
-        sep = "&" if "?" in target_url else "?"
-        url_with_locale = f"{target_url}{sep}locale=fr"
+        
+        # Transform Ouedkniss URL to Proxyium URL
+        proxied_url = get_proxyium_url(target_url)
+        
+        print(f"{zone_prefix}[{datetime.now().time()}] Scraping via PROXYIUM: {target_url} (Attempt {attempt+1}/{effective_max_retries})")
 
         try:
             # Direct crawl using the new scraper runner
-            result = await crawl(url_with_locale, proxy, context, config=config, headless=True)
+            result = await crawl(proxied_url, None, context, config=config, headless=True)
             
             if result.success:
                 if proxy_manager and proxy:
