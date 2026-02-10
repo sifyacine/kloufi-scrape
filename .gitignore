@@ -50,7 +50,7 @@ logs/
 
 # dotenv
 .env
-.env.*
+
 
 # Playwright artifacts
 playwright-report/
