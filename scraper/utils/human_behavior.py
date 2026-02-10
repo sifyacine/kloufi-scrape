@@ -80,3 +80,68 @@ async def random_mistake(page: Page) -> None:
     if random.random() < 0.05: # 5% chance
         await human_mouse_move(page)
         await human_delay(0.5, 1.0)
+
+async def hover_random_elements(page: Page, selector: str) -> None:
+    """
+    Find elements matching selector and hover over some of them randomly.
+    """
+    elements = await page.locator(selector).all()
+    if not elements:
+        return
+    
+    # Hover over 1-3 random elements
+    to_hover = random.sample(elements, min(len(elements), random.randint(1, 3)))
+    for el in to_hover:
+        try:
+            # Scroll into view naturally if needed
+            await el.scroll_into_view_if_needed()
+            await human_delay(0.5, 1.5)
+            
+            # Get bounding box to hover within it
+            box = await el.bounding_box()
+            if box:
+                target_x = box['x'] + random.randint(5, int(box['width']) - 5)
+                target_y = box['y'] + random.randint(5, int(box['height']) - 5)
+                await human_mouse_move(page, target_x, target_y)
+                await human_delay(1, 3) # "Thinking" while hovering
+        except:
+            continue
+
+async def random_navigation(page: Page, base_domain: str = "ouedkniss.com") -> bool:
+    """
+    Perform a random navigation action:
+    - 40% Go back (if possible)
+    - 40% Click a random internal link
+    - 20% Just stay and scroll more
+    Returns True if navigation happened, False otherwise.
+    """
+    action = random.random()
+    
+    if action < 0.4: # Go back
+        print("  [Human] Decided to go back...")
+        try:
+            await page.go_back(wait_until='domcontentloaded')
+            await human_delay(2, 5)
+            return True
+        except:
+            return False
+            
+    elif action < 0.8: # Click random internal link
+        print("  [Human] Looking for something else to click...")
+        try:
+            # Find all internal links that look like category or other sections
+            links = await page.locator(f'a[href*="{base_domain}"], a[href^="/"]').all()
+            if links:
+                target = random.choice(links)
+                href = await target.get_attribute('href')
+                # Avoid common non-navigational links
+                if href and not any(x in href for x in ['tel:', 'mailto:', '#', 'javascript:']):
+                    await target.scroll_into_view_if_needed()
+                    await human_delay(1, 2)
+                    await target.click()
+                    await human_delay(3, 7)
+                    return True
+        except:
+            pass
+            
+    return False

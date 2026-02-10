@@ -15,7 +15,10 @@ from scraper.proxy.proxy_sources import fetch_and_validate_proxies
 from scraper.proxy.proxy_manager import ProxyManager
 from scraper.crawler.playwright_crawler import crawl_with_playwright
 from scraper.extractor.detail_extractor import DetailExtractor
-from scraper.utils.human_behavior import human_delay, simulate_reading
+from scraper.utils.human_behavior import (
+    human_delay, human_scroll, human_mouse_move, 
+    simulate_reading, random_mistake, hover_random_elements, random_navigation
+)
 
 # Auto-install stealth if missing
 try:
@@ -33,237 +36,142 @@ except ImportError:
         sys.exit(1)
 
 # Configuration
-BASE_URL = "https://www.ouedkniss.com/immobilier/{}"
-START_PAGE = 1
-MAX_PAGES = 1  # Scrape 5 pages
-CONCURRENCY = 1 # Number of concurrent detail extractions
+BASE_URL = "https://www.ouedkniss.com/immobilier"
+CONCURRENCY = 1 
+MAX_TARGET_ADS = 15 # Goal for the session
 
-async def crawl_listings():
-    """Phase 1: Crawl listing pages to get announcement URLs."""
-    print(f"\n{'='*60}")
-    print(f"PHASE 1: CRAWLING LISTING PAGES")
-    print(f"{'='*60}")
-    
-    # Initialize Proxy Manager with VALIDATED proxies
-    proxies = await fetch_and_validate_proxies()
-    if not proxies:
-        print("CRITICAL: No valid proxies found. Exiting.")
-        return []
-        
-    manager = ProxyManager(proxies)
-    print(f"Loaded {len(proxies)} validated proxies.")
+class BrowsingSession:
+    def __init__(self, manager: ProxyManager):
+        self.manager = manager
+        self.announcements = []
+        self.visited_urls = set()
+        self.target_ads_reached = 0
 
-    all_found_urls = []
-    
-    for page_num in range(START_PAGE, START_PAGE + MAX_PAGES):
-        url = BASE_URL.format(page_num)
-        print(f"Scraping Listing Page {page_num}/{START_PAGE + MAX_PAGES - 1}: {url}")
-        
-        match = tldextract.extract(url)
-        domain = match.domain + '.' + match.suffix
-        
-        # Retry loop for listing pages (Aggressive retries for free proxies)
-        max_retries = 20
-        success = False
-        
-        for attempt in range(max_retries):
-            # Get a fresh proxy (rotate if this isn't the first attempt)
-            should_rotate = attempt > 0
-            if should_rotate:
-                print(f"  [Retry {attempt}/{max_retries}] Rotating proxy due to failure...")
-                
-            proxy = manager.get_proxy(domain, rotate=should_rotate)
+    async def run(self):
+        print(f"\n{'='*60}")
+        print(f"STARTING BEHAVIORAL BROWSING SESSION")
+        print(f"{'='*60}")
+
+        # Check for existing progress
+        if os.path.exists('announcements.json'):
+            try:
+                with open('announcements.json', 'r', encoding='utf-8') as f:
+                    self.announcements = json.load(f)
+                    self.visited_urls = {item['url'] for item in self.announcements if 'url' in item}
+                    print(f"Loaded {len(self.announcements)} existing ads.")
+            except: pass
+
+        async with Stealth().use_async(async_playwright()) as p:
+            browser_args = ["--disable-blink-features=AutomationControlled", "--no-sandbox"]
+            browser = await p.chromium.launch(headless=True, args=browser_args)
+            
+            # Select proxy
+            proxy = self.manager.get_proxy("ouedkniss.com", rotate=True)
+            context_options = {
+                "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                "viewport": {"width": 1920, "height": 1080}
+            }
+            if proxy:
+                context_options["proxy"] = {"server": proxy}
+            
+            context = await browser.new_context(**context_options)
+            page = await context.new_page()
             
             try:
-                print(f"  Using proxy: {proxy}")
-                # Crawl with Playwright WITH PROXY
-                html, card_count = await crawl_with_playwright(url, proxy=proxy, headless=True)
+                # 1. Start at the category page
+                print(f"  [Session] Navigating to category: {BASE_URL}")
+                await page.goto(BASE_URL, wait_until='domcontentloaded')
+                await simulate_reading(page, 3)
                 
-                print(f"  [OK] Cards detected: {card_count}")
-                
-                soup = BeautifulSoup(html, 'html.parser')
-                # Extract URLs
-                cards = soup.select('.o-announ-card-column a.o-announ-card-content')
-                
-                extracted_count = 0
-                for card in cards:
-                    href = card.get('href')
-                    if href:
-                        full_url = f"https://www.ouedkniss.com{href}" if href.startswith('/') else href
-                        all_found_urls.append(full_url)
-                        extracted_count += 1
-                
-                manager.report_success(proxy)
-                success = True
-                
-                # Human behavior: Pause after successfully scraping a list page
-                if page_num < START_PAGE + MAX_PAGES - 1:
-                    print(f"  [Human] Taking a break before next page...")
-                    await human_delay(5, 15)
-                
-                break # Move to next page
-                
+                while self.target_ads_reached < MAX_TARGET_ADS:
+                    # Random behavior: Scroll and look around
+                    await human_scroll(page, max_scrolls=random.randint(2, 5))
+                    
+                    # Occasionally hover over some cards
+                    if random.random() < 0.7:
+                        print("  [Human] Checking out some interesting titles...")
+                        await hover_random_elements(page, 'a.o-announ-card-content')
+
+                    # Extract all currently visible cards
+                    cards = await page.locator('a.o-announ-card-content').all()
+                    if not cards:
+                        print("  [WARN] No cards found. Scrolling more...")
+                        await human_scroll(page, 3)
+                        continue
+
+                    # Pick a card to click
+                    # Prefer one we haven't visited
+                    eligible_cards = []
+                    for card in cards:
+                        href = await card.get_attribute('href')
+                        if href:
+                            full_url = f"https://www.ouedkniss.com{href}" if href.startswith('/') else href
+                            if full_url not in self.visited_urls:
+                                eligible_cards.append((card, full_url))
+                    
+                    if not eligible_cards:
+                        print("  [Human] Nothing interesting here. Moving to next page or navigating...")
+                        if not await random_navigation(page):
+                            # Fallback: just scroll more
+                            await human_scroll(page, 5)
+                        continue
+
+                    # Select an ad to "click"
+                    target_card, target_url = random.choice(eligible_cards[:5]) # Pick from top ones
+                    
+                    print(f"  [Human] This looks interesting: {target_url}")
+                    await target_card.scroll_into_view_if_needed()
+                    await human_delay(1, 2)
+                    await target_card.click()
+                    
+                    # Now on detail page
+                    await simulate_reading(page, 5)
+                    
+                    # Extract Data
+                    extractor = DetailExtractor(page)
+                    data = await extractor.extract(target_url)
+                    if data:
+                        self.announcements.append(data)
+                        self.visited_urls.add(target_url)
+                        self.target_ads_reached += 1
+                        print(f"  [SUCCESS] Scraped ad {self.target_ads_reached}/{MAX_TARGET_ADS}")
+                        
+                        # Save progress
+                        with open('announcements.json', 'w', encoding='utf-8') as f:
+                            json.dump(self.announcements, f, indent=4, ensure_ascii=False)
+                    
+                    # After reading, DECIDE: go back or click something else?
+                    if random.random() < 0.8:
+                        print("  [Human] Going back to the search results...")
+                        await page.go_back(wait_until='domcontentloaded')
+                        await human_delay(2, 4)
+                    else:
+                        print("  [Human] Oh, let's see where this internal link goes...")
+                        await random_navigation(page)
+
+                    # Occasionally take a "long break" as if distracted
+                    if random.random() < 0.1:
+                        distracted_time = random.randint(20, 60)
+                        print(f"  [Human] Distracted for {distracted_time} seconds (getting coffee?)...")
+                        await asyncio.sleep(distracted_time)
+
             except Exception as e:
-                err_msg = str(e)
-                print(f"  [FAILED] Attempt {attempt+1}: {e}")
-                
-                # Mark proxy as bad if tunnel fails (HTTPS not supported)
-                if "ERR_TUNNEL_CONNECTION_FAILED" in err_msg or "Target closed" in err_msg:
-                    print(f"  [BAD PROXY] Discarding {proxy} due to tunnel failure.")
-                    manager.report_failure(proxy)
-                else:
-                    manager.report_failure(proxy)
-                continue
-        
-        if not success:
-            print(f"[ERROR] Failed to scrape page {page_num} after {max_retries} attempts.")
+                print(f"  [CRITICAL] Session failed: {e}")
+            finally:
+                await browser.close()
+                print(f"\nSession Complete. Total Ads Scraped: {self.target_ads_reached}")
 
-    # De-duplicate
-    unique_urls = list(set(all_found_urls))
-    print(f"\nPhase 1 Complete. Total Unique URLs: {len(unique_urls)}")
-    
-    # Save raw URLs
-    with open('crawled_urls.json', 'w', encoding='utf-8') as f:
-        json.dump(unique_urls, f, indent=4, ensure_ascii=False)
-        
-    return unique_urls
-
-async def extract_details(urls):
-    """Phase 2: Extract details for each URL."""
-    print(f"\n{'='*60}")
-    print(f"PHASE 2: EXTRACTING DETAILS ({len(urls)} URLs)")
-    print(f"{'='*60}")
-
+async def main():
     # Initialize Proxy Manager
     proxies = await fetch_and_validate_proxies()
     if not proxies:
         print("CRITICAL: No valid proxies found. Exiting.")
         return
-
+        
     manager = ProxyManager(proxies)
-
-    announcements = []
     
-    # Check for existing progress
-    if os.path.exists('announcements.json'):
-        try:
-            with open('announcements.json', 'r', encoding='utf-8') as f:
-                existing = json.load(f)
-                # Map existing by URL to skip
-                existing_urls = {item['url'] for item in existing if 'url' in item}
-                print(f"Found {len(existing)} existing announcements. Skipping them.")
-                announcements = existing
-                urls = [u for u in urls if u not in existing_urls]
-                print(f"Remaining to scrape: {len(urls)}")
-        except:
-            pass
-
-    if not urls:
-        print("No new URLs to scrape.")
-        return
-
-    # Use strict Stealth context manager as requested
-    async with Stealth().use_async(async_playwright()) as p:
-        # STEALTH ARGS
-        browser_args = [
-            "--disable-blink-features=AutomationControlled",
-            "--no-sandbox"
-        ]
-        
-        browser = await p.chromium.launch(headless=True, args=browser_args)
-        sem = asyncio.Semaphore(CONCURRENCY)
-
-        async def process_url(url):
-            async with sem:
-                domain = "ouedkniss.com"
-                
-                # Retry loop
-                for attempt in range(3):
-                    # Rotate proxy for EVERY attempt (even the first one if we want distribution)
-                    # Use rotate=True to pick from top 20
-                    proxy = manager.get_proxy(domain, rotate=True)
-                    
-                    context = None
-                    page = None
-                    try:
-                        context_options = {
-                            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
-                        }
-                        if proxy:
-                            context_options["proxy"] = {"server": proxy}
-                        
-                        context = await browser.new_context(**context_options)
-                        page = await context.new_page()
-                        
-                        # Stealth is handled by the wrapper now
-                        
-                        print(f"[Attempt {attempt+1}/3] {url} (Proxy: {proxy})")
-                        
-                        extractor = DetailExtractor(page) # Pass page directly
-                        data = await extractor.extract(url)
-                        
-                        if data:
-                            announcements.append(data)
-                            manager.report_success(proxy)
-                            return data # Success
-                        else:
-                            # Extraction returned None (failed internally)
-                            manager.report_failure(proxy)
-                            # Continue to next attempt
-                    
-                    except Exception as e:
-                        err_msg = str(e)
-                        print(f"  Error processing {url}: {e}")
-                        
-                        if "ERR_TUNNEL_CONNECTION_FAILED" in err_msg or "Target closed" in err_msg:
-                            print(f"  [BAD PROXY] Discarding {proxy} due to tunnel failure.")
-                        
-                        manager.report_failure(proxy)
-                    finally:
-                        if page: await page.close()
-                        if context: await context.close()
-                
-                return None # Failed after all retries
-
-        # Shuffle to distribute load
-        random.shuffle(urls)
-        
-        # Process in chunks
-        chunk_size = 10
-        total_chunks = (len(urls) + chunk_size - 1) // chunk_size
-        
-        for i in range(0, len(urls), chunk_size):
-            chunk = urls[i:i+chunk_size]
-            current_chunk_idx = i // chunk_size + 1
-            print(f"Processing chunk {current_chunk_idx}/{total_chunks}...")
-            
-            chunk_tasks = [process_url(u) for u in chunk]
-            await asyncio.gather(*chunk_tasks)
-            
-            # Save after chunk
-            with open('announcements.json', 'w', encoding='utf-8') as f:
-                json.dump(announcements, f, indent=4, ensure_ascii=False)
-            print(f"Saved {len(announcements)} total announcements.")
-            
-            # Human behavior: Longer break between chunks to simulate session breaks
-            print(f"  [Human] Chunk complete. Distracted for a moment...")
-            await human_delay(10, 30)
-
-        await browser.close()
-
-    print(f"\n[SUCCESS] Extraction complete. Saved {len(announcements)} announcements to 'announcements.json'")
-
-async def main():
-    # 1. Get URLs
-    if os.path.exists('crawled_urls.json'):
-        print("Found existing 'crawled_urls.json'. Using it.")
-        with open('crawled_urls.json', 'r', encoding='utf-8') as f:
-            urls = json.load(f)
-    else:
-        urls = await crawl_listings()
-    
-    # 2. Extract Details
-    await extract_details(urls)
+    session = BrowsingSession(manager)
+    await session.run()
 
 if __name__ == "__main__":
     asyncio.run(main())
