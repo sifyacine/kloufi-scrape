@@ -65,6 +65,25 @@ async def crawl_with_playwright(url, proxy=None, headless=True):
             
             print(f"  [OK] Scrolling complete: {last_count} announcement cards loaded")
             
+            # DEBUG: If 0 cards, capture info to see why
+            if last_count == 0:
+                print(f"  [WARN] Found 0 cards. Capturing debug info...")
+                timestamp = int(asyncio.get_event_loop().time())
+                try:
+                    # await page.screenshot(path=f"debug_zero_cards_{timestamp}.png")
+                    content = await page.content()
+                    with open(f"debug_zero_cards_{timestamp}.html", "w", encoding="utf-8") as f:
+                        f.write(content)
+                    
+                    title = await page.title()
+                    print(f"  [DEBUG_LOG] Page Title: {title}")
+                    print(f"  [DEBUG_LOG] HTML Length: {len(content)}")
+                    
+                    if "Just a moment" in title or "Cloudflare" in content:
+                        print(f"  [DEBUG_LOG] BLOCK DETECTED: Cloudflare Challenge")
+                except Exception as e:
+                    print(f"  [ERROR] Failed to save debug info: {e}")
+
             # Get final HTML
             html = await page.content()
             
