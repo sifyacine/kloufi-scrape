@@ -312,7 +312,49 @@ async def scrape_single_url(
             if attempt < max_retries:
                 await asyncio.sleep(retry_delay)
                 
-    print(f"[DETAIL][{zone_name}] FAILED to scrape {target_url} via Proxyium after {max_retries} attempts.")
+    print(f"[DETAIL][{zone_name}] Proxyium FAILED. Falling back to Custom Proxy...")
+    
+    # Fallback Mode: Standalone Direct Scraping with custom proxies
+    playwright_cm = async_playwright()
+    if Stealth: playwright_cm = Stealth().use_async(playwright_cm)
+    
+    async with playwright_cm as p:
+        browser_args = ["--disable-blink-features=AutomationControlled", "--no-sandbox"]
+        browser = await p.chromium.launch(headless=True, args=browser_args)
+        
+        # Select proxy from manager
+        proxy = None
+        if proxy_manager:
+            proxy = proxy_manager.get_proxy("ouedkniss.com", rotate=True)
+            
+        context_options = {
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            "viewport": {"width": 1920, "height": 1080}
+        }
+        if proxy:
+            context_options["proxy"] = {"server": proxy}
+            print(f"  [{zone_name}] [Fallback] Using custom proxy: {proxy}")
+            
+        context = await browser.new_context(**context_options)
+        page_obj = await context.new_page()
+        
+        try:
+            await page_obj.goto(f"{target_url}{'&' if '?' in target_url else '?'}lang=fr", wait_until='domcontentloaded')
+            # Locale & Consent
+            await page_obj.evaluate("() => { localStorage.setItem('ok-auth-frame', JSON.stringify({ locale: 'fr' })); document.cookie = 'ok-locale=fr; path=/; domain=.ouedkniss.com'; }")
+            try: await page_obj.locator('button.fc-button.fc-cta-consent.fc-primary-button').click(timeout=3000)
+            except: pass
+            
+            await simulate_reading(page_obj, 5)
+            await human_scroll(page_obj, 3)
+            
+            content = await page_obj.content()
+            await _parse_and_save(content, target_url, zone_name)
+            print(f"  [{zone_name}] [Fallback] SUCCESS via Custom Proxy!")
+        except Exception as fallback_e:
+            print(f"  [{zone_name}] [Fallback] FAILED: {fallback_e}")
+        finally:
+            await browser.close()
 
 async def _parse_and_save(html: str, target_url: str, zone_name: str) -> None:
     """Helper to parse HTML and save to DB/JSON."""
