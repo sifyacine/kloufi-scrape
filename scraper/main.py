@@ -87,8 +87,30 @@ async def crawl_listings():
                 # traceback.print_exc() # Reduce noise
                 continue
         
+                continue
+        
         if not success:
-            print(f"[ERROR] Failed to scrape page {page_num} after {max_retries} attempts. Skipping.")
+            print(f"  [WARN] All {max_retries} proxy attempts failed. Trying DIRECT connection (No Proxy)...")
+            try:
+                # Last resort: Direct connection
+                html, card_count = await crawl_with_playwright(url, proxy=None, headless=True)
+                print(f"  [OK] Direct connection successful! Cards detected: {card_count}")
+                
+                soup = BeautifulSoup(html, 'html.parser')
+                cards = soup.select('.o-announ-card-column a.o-announ-card-content')
+                extracted_count = 0
+                for card in cards:
+                    href = card.get('href')
+                    if href:
+                        full_url = f"https://www.ouedkniss.com{href}" if href.startswith('/') else href
+                        all_found_urls.append(full_url)
+                        extracted_count += 1
+                print(f"  [SUCCESS] Extracted {extracted_count} URLs (Direct)")
+                success = True
+                
+            except Exception as e:
+                print(f"  [FAILED] Direct connection also failed: {e}")
+                print(f"[ERROR] Failed to scrape page {page_num} completely. Skipping.")
 
     # De-duplicate
     unique_urls = list(set(all_found_urls))

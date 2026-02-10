@@ -30,8 +30,8 @@ async def crawl_with_playwright(url, proxy=None, headless=True):
         
         try:
             print(f"  Loading {url}...")
-            # Navigate to page
-            await page.goto(url, wait_until='domcontentloaded', timeout=60000)
+            # Navigate to page (increased timeout for slow proxies)
+            await page.goto(url, wait_until='domcontentloaded', timeout=90000)
             
             # Initial wait for Vue.js to initialize
             await asyncio.sleep(5)
