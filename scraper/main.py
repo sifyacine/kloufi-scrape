@@ -39,15 +39,11 @@ async def crawl_listings():
         url = BASE_URL.format(page_num)
         print(f"Scraping Listing Page {page_num}/{START_PAGE + MAX_PAGES - 1}: {url}")
         
-    for page_num in range(START_PAGE, START_PAGE + MAX_PAGES):
-        url = BASE_URL.format(page_num)
-        print(f"Scraping Listing Page {page_num}/{START_PAGE + MAX_PAGES - 1}: {url}")
-        
         match = tldextract.extract(url)
         domain = match.domain + '.' + match.suffix
         
-        # Retry loop for listing pages
-        max_retries = 5
+        # Retry loop for listing pages (Aggressive retries for free proxies)
+        max_retries = 20
         success = False
         
         for attempt in range(max_retries):
@@ -83,34 +79,12 @@ async def crawl_listings():
                 
             except Exception as e:
                 print(f"  [FAILED] Attempt {attempt+1}: {e}")
-                import traceback
-                # traceback.print_exc() # Reduce noise
-                continue
-        
+                # import traceback
+                # traceback.print_exc()
                 continue
         
         if not success:
-            print(f"  [WARN] All {max_retries} proxy attempts failed. Trying DIRECT connection (No Proxy)...")
-            try:
-                # Last resort: Direct connection
-                html, card_count = await crawl_with_playwright(url, proxy=None, headless=True)
-                print(f"  [OK] Direct connection successful! Cards detected: {card_count}")
-                
-                soup = BeautifulSoup(html, 'html.parser')
-                cards = soup.select('.o-announ-card-column a.o-announ-card-content')
-                extracted_count = 0
-                for card in cards:
-                    href = card.get('href')
-                    if href:
-                        full_url = f"https://www.ouedkniss.com{href}" if href.startswith('/') else href
-                        all_found_urls.append(full_url)
-                        extracted_count += 1
-                print(f"  [SUCCESS] Extracted {extracted_count} URLs (Direct)")
-                success = True
-                
-            except Exception as e:
-                print(f"  [FAILED] Direct connection also failed: {e}")
-                print(f"[ERROR] Failed to scrape page {page_num} completely. Skipping.")
+            print(f"[ERROR] Failed to scrape page {page_num} after {max_retries} attempts.")
 
     # De-duplicate
     unique_urls = list(set(all_found_urls))
