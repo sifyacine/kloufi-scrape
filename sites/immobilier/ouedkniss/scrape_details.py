@@ -1,5 +1,3 @@
-from bs4 import BeautifulSoup
-from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode, BrowserConfig
 from datetime import datetime
 import sys
 import os
@@ -7,6 +5,13 @@ import json
 import asyncio
 import re
 from scraper.utils.human_behavior import human_delay, human_scroll, simulate_reading, human_mouse_move
+from scraper.proxy.proxy_manager import ProxyManager
+from scraper.extractor.detail_extractor import DetailExtractor
+from playwright.async_api import async_playwright
+try:
+    from playwright_stealth import Stealth
+except ImportError:
+    Stealth = None
 
 """
 Detail-page scraper for Ouedkniss immobilier via Proxyium.
@@ -214,6 +219,7 @@ async def scrape_single_url(
     retry_delay: float = 5,
     zone_name: str = "UNKNOWN",
     page: Optional[any] = None, # Allow passing an existing page
+    proxy_manager: Optional[ProxyManager] = None, # Allow passing a proxy manager
 ) -> None:
     """
     Scrape a single Ouedkniss detail page through Proxyium.
@@ -238,101 +244,77 @@ async def scrape_single_url(
         text_mode=False,
         browser_type="chromium",
     )
-    
+
     # If a page is provided, we use it directly (Behavioral Session mode)
     if page:
         print(f"[DETAIL][{zone_name}] Behavioral mode: Scraping {target_url} using existing page.")
         try:
-            # The page should already be on Proxyium or looking at the target
-            # We assume it's already navigated or we navigate now
-            if not page.url.startswith(target_url):
-                print(f"  [Human] Navigating to ad...")
-                # Use the Proxyium flow if needed, but if we are already 'inside' Proxyium
-                # we might just interact with the form again or the page itself.
-                # For simplicity, if page is provided, we assume we are already ON the ad page 
-                # (handled by BrowsingSession in main.py)
-                pass
-            
-            await simulate_reading(page, 4)
+            await simulate_reading(page, random.randint(3, 7))
             await human_scroll(page, random.randint(1, 3))
             
-            content = await page.content()
-            await _parse_and_save(content, target_url, zone_name)
+            # Use the project's DetailExtractor for consistency
+            extractor = DetailExtractor(page)
+            data = await extractor.extract(target_url)
+            
+            if data:
+                print(f"[DETAIL][{zone_name}] Successfully extracted ad data: {target_url}")
+                # Save data (the project usually handles saving in main.py, 
+                # but ouedkniss module has its own _parse_and_save for backward compatibility)
+                content = await page.content()
+                await _parse_and_save(content, target_url, zone_name)
             return
         except Exception as e:
             print(f"  [ERROR] Behavioral detail scrape failed: {e}")
             return
 
-    js_commands = [
-        # Give Proxyium time to load and stabilize – kept moderate so we
-        # don't hold connections for too long.
-        "await new Promise(resolve => setTimeout(resolve, 7000));",
-        # Force French locale in LocalStorage and Cookies (best effort).
-        "localStorage.setItem('ok-auth-frame', JSON.stringify({ locale: 'fr' }));",
-        "document.cookie = 'ok-locale=fr; path=/; domain=.ouedkniss.com';",
-        # Accept cookies if the Quantcast / FC banner appears.
-        "document.querySelector('button.fc-button.fc-cta-consent.fc-primary-button')?.click();",
-        # Fill in Proxyium form with the final Ouedkniss URL (force lang=fr).
-        f"document.getElementById('unique-form-control').value = '{target_url}{'&' if '?' in target_url else '?'}lang=fr';",
-        "document.querySelector('#web_proxy_form').submit();",
-        # Allow proxied page to render.
-        "await new Promise(resolve => setTimeout(resolve, 4000));",
-        "document.querySelector('button.fc-button.fc-cta-consent.fc-primary-button')?.click();",
-        # Scroll to contact block so that lazy-loaded content has a chance to appear.
-        """
-        (async () => {
-            let maxScrollHeight = document.body.scrollHeight;
-            let scrollStep = 300;
-            let currentScroll = 0;
-
-            while (currentScroll <= maxScrollHeight) {
-                let targetElement = document.getElementById('announcementUserInfo');
-                if (targetElement) {
-                    targetElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    console.log('Element found and scrolled into view');
-                    break;
-                }
-                currentScroll += scrollStep;
-                window.scrollBy(0, scrollStep);
-                await new Promise(resolve => setTimeout(resolve, 500));
-                maxScrollHeight = document.body.scrollHeight;
-            }
-
-            if (!document.getElementById('announcementUserInfo')) {
-                console.log('Element not found after scrolling to the bottom of the page');
-            }
-        })();
-        """,
-        # Final wait to ensure lazy-loaded pieces are rendered.
-        "await new Promise(resolve => setTimeout(resolve, 4000));",
-    ]
-
-    config = CrawlerRunConfig(
-        cache_mode=CacheMode.BYPASS,
-        js_code=js_commands,
-        # Slightly lower delay/timeout to reduce long-lived sessions on Proxyium,
-        # while still being generous for slow pages.
-        delay_before_return_html=20,
-        page_timeout=110_000,
-        wait_until="domcontentloaded",
-    )
-
-    for attempt in range(1, max_retries + 1):
-        print(
-            f"[DETAIL][{zone_name}] Attempt {attempt}/{max_retries} → {target_url}"
-        )
-        async with AsyncWebCrawler(verbose=True, config=browser_config) as crawler:
+    # Standalone mode: Create own browser and use proxies
+    print(f"[DETAIL][{zone_name}] Standalone mode: Scraping {target_url}")
+    async with async_playwright() as p:
+        browser_args = ["--disable-blink-features=AutomationControlled", "--no-sandbox"]
+        browser = await p.chromium.launch(headless=True, args=browser_args)
+        
+        # Select proxy
+        proxy = None
+        if proxy_manager:
+            proxy = proxy_manager.get_proxy("ouedkniss.com", rotate=True)
+        
+        context_options = {
+            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+            "viewport": {"width": 1920, "height": 1080}
+        }
+        if proxy:
+            context_options["proxy"] = {"server": proxy}
+            print(f"  [{zone_name}] Using proxy: {proxy}")
+        
+        # Use stealth if available
+        if Stealth:
+            context = await Stealth().use_async(browser.new_context(**context_options))
+        else:
+            context = await browser.new_context(**context_options)
+        
+        page = await context.new_page()
+        
+        try:
+            await page.goto(f"{target_url}{'&' if '?' in target_url else '?'}lang=fr", wait_until='domcontentloaded')
+            
+            # Locale handling
+            await page.evaluate("""() => {
+                localStorage.setItem('ok-auth-frame', JSON.stringify({ locale: 'fr' }));
+                document.cookie = 'ok-locale=fr; path=/; domain=.ouedkniss.com';
+            }""")
+            
+            # Consent banner
             try:
-                result = await crawler.arun(url=proxy_url, config=config, timeout=120_000)
-            except Exception as e:
-                print(
-                    f"[DETAIL][{zone_name}] Crawl engine error for {target_url}: {e}"
-                )
-                result = None
-
-        if result and result.success:
-            await _parse_and_save(result.html, target_url, zone_name)
-            return
+                await page.locator('button.fc-button.fc-cta-consent.fc-primary-button').click(timeout=5000)
+            except: pass
+            
+            await simulate_reading(page, random.randint(5, 10))
+            await human_scroll(page, random.randint(2, 4))
+            
+            content = await page.content()
+        finally:
+            await browser.close()
+    return
 
 async def _parse_and_save(html: str, target_url: str, zone_name: str) -> None:
     """Helper to parse HTML and save to DB/JSON."""
