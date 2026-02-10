@@ -21,6 +21,10 @@ async def test_proxy_fetching():
     print("Checking if validation function is callable...")
     assert callable(fetch_and_validate_proxies)
     print("Validation function exists.")
+    
+    # We can also test the validate_proxy function in isolation if we import it, 
+    # but since it's an internal helper, let's just rely on the main function check for now.
+    print("NOTE: Real validation now checks HTTPS. This might be slow on bad connections.")
 
 async def test_proxy_manager():
     print("\nTesting Proxy Manager Rotation...")

@@ -16,12 +16,20 @@ from scraper.proxy.proxy_manager import ProxyManager
 from scraper.crawler.playwright_crawler import crawl_with_playwright
 from scraper.extractor.detail_extractor import DetailExtractor
 
-# Try to import stealth, warn if missing
+# Auto-install stealth if missing
 try:
     from playwright_stealth import stealth_async
 except ImportError:
-    print("WARNING: playwright-stealth not installed. Stealth mode disabled.")
-    async def stealth_async(page): pass
+    print("WARNING: playwright-stealth not installed. Attempting auto-install...")
+    import subprocess
+    try:
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright-stealth"])
+        from playwright_stealth import stealth_async
+        print("Successfully installed playwright-stealth.")
+    except Exception as e:
+        print(f"CRITICAL ERROR: Could not install playwright-stealth: {e}")
+        print("Please run: pip install playwright-stealth")
+        sys.exit(1)
 
 # Configuration
 BASE_URL = "https://www.ouedkniss.com/immobilier/{}"
@@ -90,8 +98,15 @@ async def crawl_listings():
                 break # Move to next page
                 
             except Exception as e:
+                err_msg = str(e)
                 print(f"  [FAILED] Attempt {attempt+1}: {e}")
-                manager.report_failure(proxy)
+                
+                # Mark proxy as bad if tunnel fails (HTTPS not supported)
+                if "ERR_TUNNEL_CONNECTION_FAILED" in err_msg or "Target closed" in err_msg:
+                    print(f"  [BAD PROXY] Discarding {proxy} due to tunnel failure.")
+                    manager.report_failure(proxy)
+                else:
+                    manager.report_failure(proxy)
                 continue
         
         if not success:
@@ -191,7 +206,12 @@ async def extract_details(urls):
                             # Continue to next attempt
                     
                     except Exception as e:
+                        err_msg = str(e)
                         print(f"  Error processing {url}: {e}")
+                        
+                        if "ERR_TUNNEL_CONNECTION_FAILED" in err_msg or "Target closed" in err_msg:
+                            print(f"  [BAD PROXY] Discarding {proxy} due to tunnel failure.")
+                        
                         manager.report_failure(proxy)
                     finally:
                         if page: await page.close()

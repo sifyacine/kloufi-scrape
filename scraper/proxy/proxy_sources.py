@@ -29,7 +29,8 @@ async def _fetch_raw_proxies():
 
 async def validate_proxy(proxy, session):
     try:
-        async with session.get("http://www.google.com", proxy=proxy, timeout=5) as r:
+        # Crucial: Validate against HTTPS to ensure CONNECT method works
+        async with session.get("https://www.google.com", proxy=proxy, timeout=8) as r:
             if r.status == 200:
                 return proxy
     except:
