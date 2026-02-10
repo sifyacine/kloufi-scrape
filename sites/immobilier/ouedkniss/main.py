@@ -23,9 +23,16 @@ import json
 import os
 import re
 import random
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple
+
+# Add the project root to sys.path
+# This script is in sites/immobilier/ouedkniss/, so root is 3 levels up
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+if ROOT_DIR not in sys.path:
+    sys.path.append(ROOT_DIR)
 
 from playwright.async_api import async_playwright
 try:
