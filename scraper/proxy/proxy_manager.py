@@ -8,14 +8,22 @@ class ProxyManager:
         self.scorer = ProxyScore()
         self.domain_proxy = defaultdict(str)
 
-    def get_proxy(self, domain):
-        if self.domain_proxy[domain]:
+    def get_proxy(self, domain, rotate=False):
+        if not rotate and self.domain_proxy[domain]:
             return self.domain_proxy[domain]
 
         ranked = sorted(self.proxies, key=lambda p: self.scorer.score(p), reverse=True)
         if not ranked:
             raise ValueError("No proxies available to choose from.")
-        proxy = random.choice(ranked[:10])
+        
+        # If rotating, pick random from top 20 to avoid hotspots
+        # If not rotating (first time), pick best one
+        if rotate:
+            top_n = ranked[:20]
+            proxy = random.choice(top_n)
+        else:
+            proxy = ranked[0]
+            
         self.domain_proxy[domain] = proxy
         return proxy
 

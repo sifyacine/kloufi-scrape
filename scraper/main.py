@@ -11,10 +11,17 @@ import time
 import random
 from bs4 import BeautifulSoup
 from playwright.async_api import async_playwright
-from scraper.proxy.proxy_sources import fetch_proxies
+from scraper.proxy.proxy_sources import fetch_and_validate_proxies
 from scraper.proxy.proxy_manager import ProxyManager
 from scraper.crawler.playwright_crawler import crawl_with_playwright
 from scraper.extractor.detail_extractor import DetailExtractor
+
+# Try to import stealth, warn if missing
+try:
+    from playwright_stealth import stealth_async
+except ImportError:
+    print("WARNING: playwright-stealth not installed. Stealth mode disabled.")
+    async def stealth_async(page): pass
 
 # Configuration
 BASE_URL = "https://www.ouedkniss.com/immobilier/{}"
@@ -28,10 +35,14 @@ async def crawl_listings():
     print(f"PHASE 1: CRAWLING LISTING PAGES")
     print(f"{'='*60}")
     
-    # Initialize Proxy Manager
-    proxies = await fetch_proxies()
+    # Initialize Proxy Manager with VALIDATED proxies
+    proxies = await fetch_and_validate_proxies()
+    if not proxies:
+        print("CRITICAL: No valid proxies found. Exiting.")
+        return []
+        
     manager = ProxyManager(proxies)
-    print(f"Loaded {len(proxies)} proxies.")
+    print(f"Loaded {len(proxies)} validated proxies.")
 
     all_found_urls = []
     
@@ -48,11 +59,11 @@ async def crawl_listings():
         
         for attempt in range(max_retries):
             # Get a fresh proxy (rotate if this isn't the first attempt)
-            if attempt > 0:
+            should_rotate = attempt > 0
+            if should_rotate:
                 print(f"  [Retry {attempt}/{max_retries}] Rotating proxy due to failure...")
-                manager.rotate(domain)
                 
-            proxy = manager.get_proxy(domain)
+            proxy = manager.get_proxy(domain, rotate=should_rotate)
             
             try:
                 print(f"  Using proxy: {proxy}")
@@ -74,13 +85,13 @@ async def crawl_listings():
                         extracted_count += 1
                 
                 print(f"  [SUCCESS] Extracted {extracted_count} URLs")
+                manager.report_success(proxy)
                 success = True
                 break # Move to next page
                 
             except Exception as e:
                 print(f"  [FAILED] Attempt {attempt+1}: {e}")
-                # import traceback
-                # traceback.print_exc()
+                manager.report_failure(proxy)
                 continue
         
         if not success:
@@ -103,7 +114,11 @@ async def extract_details(urls):
     print(f"{'='*60}")
 
     # Initialize Proxy Manager
-    proxies = await fetch_proxies()
+    proxies = await fetch_and_validate_proxies()
+    if not proxies:
+        print("CRITICAL: No valid proxies found. Exiting.")
+        return
+
     manager = ProxyManager(proxies)
 
     announcements = []
@@ -127,43 +142,62 @@ async def extract_details(urls):
         return
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        # STEALTH ARGS
+        browser_args = [
+            "--disable-blink-features=AutomationControlled",
+            "--no-sandbox"
+        ]
+        
+        browser = await p.chromium.launch(headless=True, args=browser_args)
         sem = asyncio.Semaphore(CONCURRENCY)
 
         async def process_url(url):
             async with sem:
-                # Use a fresh context with a proxy for EACH request (or rotated)
                 domain = "ouedkniss.com"
-                proxy = manager.get_proxy(domain)
                 
-                context = None
-                try:
-                    context_options = {
-                        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
-                    }
-                    if proxy:
-                        context_options["proxy"] = {"server": proxy}
-                        # print(f"  Using proxy for detail: {proxy}")
-
-                    context = await browser.new_context(**context_options)
+                # Retry loop
+                for attempt in range(3):
+                    # Rotate proxy for EVERY attempt (even the first one if we want distribution)
+                    # Use rotate=True to pick from top 20
+                    proxy = manager.get_proxy(domain, rotate=True)
                     
-                    extractor = DetailExtractor(context)
-                    data = await extractor.extract(url)
+                    context = None
+                    page = None
+                    try:
+                        context_options = {
+                            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+                        }
+                        if proxy:
+                            context_options["proxy"] = {"server": proxy}
+                        
+                        context = await browser.new_context(**context_options)
+                        page = await context.new_page()
+                        
+                        # Apply stealth
+                        await stealth_async(page)
+                        
+                        print(f"[Attempt {attempt+1}/3] {url} (Proxy: {proxy})")
+                        
+                        extractor = DetailExtractor(page) # Pass page directly
+                        data = await extractor.extract(url)
+                        
+                        if data:
+                            announcements.append(data)
+                            manager.report_success(proxy)
+                            return data # Success
+                        else:
+                            # Extraction returned None (failed internally)
+                            manager.report_failure(proxy)
+                            # Continue to next attempt
                     
-                    if data:
-                        announcements.append(data)
-                    else:
-                        # If failed, maybe rotate proxy?
-                        manager.rotate(domain)
-                    
-                    return data
-                except Exception as e:
-                    print(f"Error processing {url}: {e}")
-                    manager.rotate(domain)
-                    return None
-                finally:
-                    if context:
-                        await context.close()
+                    except Exception as e:
+                        print(f"  Error processing {url}: {e}")
+                        manager.report_failure(proxy)
+                    finally:
+                        if page: await page.close()
+                        if context: await context.close()
+                
+                return None # Failed after all retries
 
         # Shuffle to distribute load
         random.shuffle(urls)

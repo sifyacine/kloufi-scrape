@@ -1,18 +1,18 @@
-from playwright.async_api import BrowserContext, Page
+from playwright.async_api import Page
 import re
 
 class DetailExtractor:
     """Extracts detailed information from a single Ouedkniss announcement page."""
     
-    def __init__(self, context: BrowserContext):
-        self.context = context
+    def __init__(self, page: Page):
+        self.page = page
 
     async def extract(self, url: str) -> dict:
         """
         Navigates to the URL and extracts announcement details.
         Returns a dictionary with the extracted data, or None if failed.
         """
-        page = await self.context.new_page()
+        page = self.page # Use the injected page
         try:
             # Block heavy resources to speed up loading
             # await page.route("**/*.{png,jpg,jpeg,webp,gif,css,woff,woff2}", lambda route: route.abort())
@@ -54,8 +54,7 @@ class DetailExtractor:
             except:
                 pass
             return None
-        finally:
-            await page.close()
+        # Finally block removed: we do NOT close the page here, the caller does.
 
     async def _scrape_data(self, page: Page) -> dict:
         """Internal method to extract data from the page object."""
