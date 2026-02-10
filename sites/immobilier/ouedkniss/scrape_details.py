@@ -6,6 +6,7 @@ import os
 import json
 import asyncio
 import re
+from scraper.utils.human_behavior import human_delay, human_scroll, simulate_reading, human_mouse_move
 
 """
 Detail-page scraper for Ouedkniss immobilier via Proxyium.
@@ -212,6 +213,7 @@ async def scrape_single_url(
     max_retries: int = 3,
     retry_delay: float = 5,
     zone_name: str = "UNKNOWN",
+    page: Optional[any] = None, # Allow passing an existing page
 ) -> None:
     """
     Scrape a single Ouedkniss detail page through Proxyium.
@@ -236,6 +238,30 @@ async def scrape_single_url(
         text_mode=False,
         browser_type="chromium",
     )
+    
+    # If a page is provided, we use it directly (Behavioral Session mode)
+    if page:
+        print(f"[DETAIL][{zone_name}] Behavioral mode: Scraping {target_url} using existing page.")
+        try:
+            # The page should already be on Proxyium or looking at the target
+            # We assume it's already navigated or we navigate now
+            if not page.url.startswith(target_url):
+                print(f"  [Human] Navigating to ad...")
+                # Use the Proxyium flow if needed, but if we are already 'inside' Proxyium
+                # we might just interact with the form again or the page itself.
+                # For simplicity, if page is provided, we assume we are already ON the ad page 
+                # (handled by BrowsingSession in main.py)
+                pass
+            
+            await simulate_reading(page, 4)
+            await human_scroll(page, random.randint(1, 3))
+            
+            content = await page.content()
+            await _parse_and_save(content, target_url, zone_name)
+            return
+        except Exception as e:
+            print(f"  [ERROR] Behavioral detail scrape failed: {e}")
+            return
 
     js_commands = [
         # Give Proxyium time to load and stabilize – kept moderate so we
@@ -305,421 +331,426 @@ async def scrape_single_url(
                 result = None
 
         if result and result.success:
-            soup = BeautifulSoup(result.html, "html.parser")
+            await _parse_and_save(result.html, target_url, zone_name)
+            return
 
-            title = extract_text_or_default(soup, "h1.text-h5.text-capitalize")
+async def _parse_and_save(html: str, target_url: str, zone_name: str) -> None:
+    """Helper to parse HTML and save to DB/JSON."""
+    soup = BeautifulSoup(html, "html.parser")
 
-            # Try the preferred description selector first.
-            desc_elem = soup.select_one("div.v-card-text.__description")
-            if desc_elem:
-                description = desc_elem.get_text(separator="\n", strip=True)
-            else:
-                description = extract_text_or_default(
-                    soup, "div.__description.mb-2", ""
+    title = extract_text_or_default(soup, "h1.text-h5.text-capitalize")
+
+    # Try the preferred description selector first.
+    desc_elem = soup.select_one("div.v-card-text.__description")
+    if desc_elem:
+        description = desc_elem.get_text(separator="\n", strip=True)
+    else:
+        description = extract_text_or_default(
+            soup, "div.__description.mb-2", ""
+        )
+
+    print(
+        f"[DETAIL][{zone_name}] Description length={len(description)} "
+        f"preview={description[:100]!r}"
+    )
+
+    price_value = extract_text_or_default(
+        soup, "div.mt-1.line-height-2.text-primary.text-h6 div.mr-1"
+    ).replace(" ", "")
+    price_unit = extract_text_or_default(
+        soup, "div.mt-1.line-height-2.text-primary.text-h6 div.mr-1 + div"
+    )
+    price_dec = traitement_prix(price_value, price_unit)
+
+    # === Detection for bien and transaction ===
+    breadcrumb_bien, breadcrumb_transaction = extract_bien_transaction_from_breadcrumbs(
+        soup
+    )
+
+    # Transaction priority: Breadcrumbs > Title detection > Chips
+    transaction_from_title = detect_transaction_from_title(title)
+    transaction_chips = [
+        chip.get_text(strip=True)
+        for chip in soup.select(
+            "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Conditions de paiement') + div .v-chip__content"
+        )
+    ]
+
+    final_transaction = (
+        breadcrumb_transaction
+        or transaction_from_title
+        or ", ".join(transaction_chips)
+        or "Non spécifié"
+    )
+
+    # Bien priority: Breadcrumbs > Spec table
+    spec_bien = convert_property_type(
+        extract_text_or_default(
+            soup,
+            "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Type') + div",
+        )
+    )
+    final_bien = breadcrumb_bien or spec_bien
+
+    images = set()
+    image_urls = set()
+    for picture in soup.find_all("picture", class_="__slide"):
+        webp_source = picture.find("source", {"type": "image/webp"})
+        jpg_source = picture.find("source", {"type": "image/jpg"})
+
+        if webp_source and "srcset" in webp_source.attrs:
+            normalized_url = normalize_url(webp_source["srcset"])
+            if normalized_url not in image_urls:
+                images.add(webp_source["srcset"])
+                image_urls.add(normalized_url)
+
+        elif jpg_source and "srcset" in jpg_source.attrs:
+            normalized_url = normalize_url(jpg_source["srcset"])
+            if normalized_url not in image_urls:
+                images.add(jpg_source["srcset"])
+                image_urls.add(normalized_url)
+
+        else:
+            img = picture.find("img")
+            if img and "src" in img.attrs:
+                normalized_url = normalize_url(img["src"])
+                if normalized_url not in image_urls:
+                    images.add(img["src"])
+                    image_urls.add(normalized_url)
+
+    images = list(images)
+    as_photo = "Avec photo" if images else "Sans photo"
+
+    # --- LOCATION EXTRACTION ---
+    address = ""
+    wilaya = ""
+    commune = ""
+
+    try:
+        # Parse ok-list entries using icon markers.
+        for li in soup.select("ul.ok-list li"):
+            # Wilaya + Commune usually with map marker icon.
+            if li.select_one(".__prepend i.mdi-map-marker"):
+                content = (
+                    li.select_one(".__content .__title .text-wrap")
+                    or li.select_one(".__content .__title")
                 )
-
-            print(
-                f"[DETAIL][{zone_name}] Description length={len(description)} "
-                f"preview={description[:100]!r}"
-            )
-
-            price_value = extract_text_or_default(
-                soup, "div.mt-1.line-height-2.text-primary.text-h6 div.mr-1"
-            ).replace(" ", "")
-            price_unit = extract_text_or_default(
-                soup, "div.mt-1.line-height-2.text-primary.text-h6 div.mr-1 + div"
-            )
-            price_dec = traitement_prix(price_value, price_unit)
-
-            # === Detection for bien and transaction ===
-            breadcrumb_bien, breadcrumb_transaction = extract_bien_transaction_from_breadcrumbs(
-                soup
-            )
-
-            # Transaction priority: Breadcrumbs > Title detection > Chips
-            transaction_from_title = detect_transaction_from_title(title)
-            transaction_chips = [
-                chip.get_text(strip=True)
-                for chip in soup.select(
-                    "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Conditions de paiement') + div .v-chip__content"
-                )
-            ]
-
-            final_transaction = (
-                breadcrumb_transaction
-                or transaction_from_title
-                or ", ".join(transaction_chips)
-                or "Non spécifié"
-            )
-
-            # Bien priority: Breadcrumbs > Spec table
-            spec_bien = convert_property_type(
-                extract_text_or_default(
-                    soup,
-                    "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Type') + div",
-                )
-            )
-            final_bien = breadcrumb_bien or spec_bien
-
-            images = set()
-            image_urls = set()
-            for picture in soup.find_all("picture", class_="__slide"):
-                webp_source = picture.find("source", {"type": "image/webp"})
-                jpg_source = picture.find("source", {"type": "image/jpg"})
-
-                if webp_source and "srcset" in webp_source.attrs:
-                    normalized_url = normalize_url(webp_source["srcset"])
-                    if normalized_url not in image_urls:
-                        images.add(webp_source["srcset"])
-                        image_urls.add(normalized_url)
-
-                elif jpg_source and "srcset" in jpg_source.attrs:
-                    normalized_url = normalize_url(jpg_source["srcset"])
-                    if normalized_url not in image_urls:
-                        images.add(jpg_source["srcset"])
-                        image_urls.add(normalized_url)
-
-                else:
-                    img = picture.find("img")
-                    if img and "src" in img.attrs:
-                        normalized_url = normalize_url(img["src"])
-                        if normalized_url not in image_urls:
-                            images.add(img["src"])
-                            image_urls.add(normalized_url)
-
-            images = list(images)
-            as_photo = "Avec photo" if images else "Sans photo"
-
-            # --- LOCATION EXTRACTION ---
-            address = ""
-            wilaya = ""
-            commune = ""
-
-            try:
-                # Parse ok-list entries using icon markers.
-                for li in soup.select("ul.ok-list li"):
-                    # Wilaya + Commune usually with map marker icon.
-                    if li.select_one(".__prepend i.mdi-map-marker"):
-                        content = (
-                            li.select_one(".__content .__title .text-wrap")
-                            or li.select_one(".__content .__title")
-                        )
-                        if content:
-                            full = content.get_text(" ", strip=True)
-                            if " - " in full:
-                                w, c = map(str.strip, full.split(" - ", 1))
-                                wilaya, commune = w, c
-                            elif "-" in full:
-                                w, c = map(str.strip, full.split("-", 1))
-                                wilaya, commune = w, c
-                            else:
-                                wilaya = full.strip()
-                        break
-
-                # Address with the home-map-marker icon.
-                for li in soup.select("ul.ok-list li"):
-                    if li.select_one(".__prepend i.mdi-home-map-marker"):
-                        content = (
-                            li.select_one(".__content .__title .text-wrap")
-                            or li.select_one(".__content .__title")
-                        )
-                        if content:
-                            address = content.get_text(" ", strip=True)
-                        break
-
-            except Exception:
-                # Fallback: try some generic selectors if ok-list isn't present.
-                loc = soup.select_one(
-                    "div.text-wrap.text-capitalize.d-flex.flex-wrap"
-                )
-                if loc:
-                    txt = loc.get_text(" ", strip=True)
-                    if " - " in txt:
-                        wilaya, commune = map(str.strip, txt.split(" - ", 1))
+                if content:
+                    full = content.get_text(" ", strip=True)
+                    if " - " in full:
+                        w, c = map(str.strip, full.split(" - ", 1))
+                        wilaya, commune = w, c
+                    elif "-" in full:
+                        w, c = map(str.strip, full.split("-", 1))
+                        wilaya, commune = w, c
                     else:
-                        wilaya = txt
+                        wilaya = full.strip()
+                break
 
-                addr = soup.select_one("div.v-list-item__content") or soup.select_one(
-                    "span.__title div.text-wrap.text-capitalize"
+        # Address with the home-map-marker icon.
+        for li in soup.select("ul.ok-list li"):
+            if li.select_one(".__prepend i.mdi-home-map-marker"):
+                content = (
+                    li.select_one(".__content .__title .text-wrap")
+                    or li.select_one(".__content .__title")
                 )
-                if addr:
-                    address = addr.get_text(" ", strip=True)
+                if content:
+                    address = content.get_text(" ", strip=True)
+                break
 
-            if wilaya:
-                wilaya = wilaya.strip()
-            if commune:
-                commune = commune.strip()
-            if address:
-                address = address.strip()
-
-            print(
-                f"[DETAIL][{zone_name}] Location → wilaya={wilaya!r}, commune={commune!r}, adresse={address!r}"
-            )
-
-            contact_container = soup.find(id="announcementUserInfo")
-            if not contact_container:
-                print(f"[DETAIL][{zone_name}] No contact container found.")
+    except Exception:
+        # Fallback: try some generic selectors if ok-list isn't present.
+        loc = soup.select_one(
+            "div.text-wrap.text-capitalize.d-flex.flex-wrap"
+        )
+        if loc:
+            txt = loc.get_text(" ", strip=True)
+            if " - " in txt:
+                wilaya, commune = map(str.strip, txt.split(" - ", 1))
             else:
-                first_item = contact_container.select_one(".v-list-item")
-                if first_item:
-                    city_div = first_item.select_one(
-                        ".py-2.text-wrap.text-capitalize"
-                    )
-                    if city_div:
-                        city_text = city_div.get_text(strip=True)
-                        parts = city_text.split("-")
-                        if len(parts) == 2:
-                            wilaya, commune = parts
-                        else:
-                            wilaya, commune = city_text, ""
+                wilaya = txt
 
-                address_element = contact_container.find(
-                    "div", class_="v-list-item__content"
-                )
-                if address_element:
-                    address = address_element.get_text(strip=True)
+        addr = soup.select_one("div.v-list-item__content") or soup.select_one(
+            "span.__title div.text-wrap.text-capitalize"
+        )
+        if addr:
+            address = addr.get_text(" ", strip=True)
 
-            # ==================== CONTACT EXTRACTION ====================
-            contact = {
-                "name": None,
-                "profile_link": None,
-                "email": [],
-                "phones": [],
-                "whatsapp": [],
-                "telegram": [],
-                "viber": [],
-            }
+    if wilaya:
+        wilaya = wilaya.strip()
+    if commune:
+        commune = commune.strip()
+    if address:
+        address = address.strip()
 
-            # 1. Name extraction (with fallbacks).
-            name_elem = (
-                soup.select_one("a.ok-list-item .__title")
-                or soup.select_one("ul.ok-list .__title")
-                or (
-                    contact_container.select_one("a.ok-list-item .__title")
-                    if contact_container
-                    else None
-                )
-                or soup.select_one(".ok-list-item .__title")
+    print(
+        f"[DETAIL][{zone_name}] Location → wilaya={wilaya!r}, commune={commune!r}, adresse={address!r}"
+    )
+
+    contact_container = soup.find(id="announcementUserInfo")
+    if not contact_container:
+        print(f"[DETAIL][{zone_name}] No contact container found.")
+    else:
+        first_item = contact_container.select_one(".v-list-item")
+        if first_item:
+            city_div = first_item.select_one(
+                ".py-2.text-wrap.text-capitalize"
             )
-            if name_elem:
-                contact["name"] = name_elem.get_text(strip=True)
+            if city_div:
+                city_text = city_div.get_text(strip=True)
+                parts = city_text.split("-")
+                if len(parts) == 2:
+                    wilaya, commune = parts
+                else:
+                    wilaya, commune = city_text, ""
 
-            # 2. Profile link (build from user ID in raw HTML / JSON).
-            user_id = None
-            id_patterns = [
-                r'"userId"\s*:\s*"?(\d+)"?',
-                r'"user"\s*:\s*\{[^}]*?"id"\s*:\s*(\d+)',
-                r'store\.user\.id\s*=\s*(\d+)',
-                r'https://www\.ouedkniss\.com/membre/(\d+)',
-                r'"@id":\s*"https://www\.ouedkniss\.com/membre/(\d+)"',
-            ]
-            for pattern in id_patterns:
-                match = re.search(pattern, result.html)
-                if match:
-                    user_id = match.group(1)
-                    break
-            if user_id:
-                contact["profile_link"] = (
-                    f"https://www.ouedkniss.com/membre/{user_id}"
-                )
+        address_element = contact_container.find(
+            "div", class_="v-list-item__content"
+        )
+        if address_element:
+            address = address_element.get_text(strip=True)
 
-            # 3. Emails.
-            for a in soup.select('a[href^="mailto:"]'):
-                email = a["href"].replace("mailto:", "").strip().lower()
-                if email and email not in contact["email"]:
-                    contact["email"].append(email)
+    # ==================== CONTACT EXTRACTION ====================
+    contact = {
+        "name": None,
+        "profile_link": None,
+        "email": [],
+        "phones": [],
+        "whatsapp": [],
+        "telegram": [],
+        "viber": [],
+    }
 
-            # 4. Phones (links + visible text).
-            seen_phones = set()
-            for a in soup.select('a[href^="tel:"]'):
-                phone = re.sub(r"\D", "", a["href"])
-                if len(phone) >= 9 and phone not in seen_phones:
-                    seen_phones.add(phone)
-                    contact["phones"].append(phone)
+    # 1. Name extraction (with fallbacks).
+    name_elem = (
+        soup.select_one("a.ok-list-item .__title")
+        or soup.select_one("ul.ok-list .__title")
+        or (
+            contact_container.select_one("a.ok-list-item .__title")
+            if contact_container
+            else None
+        )
+        or soup.select_one(".ok-list-item .__title")
+    )
+    if name_elem:
+        contact["name"] = name_elem.get_text(strip=True)
 
-            for btn in soup.select(
-                "#announcementUserInfo a.v-btn, #announcementUserInfo a.ok-list-item"
-            ):
-                txt = btn.get_text(strip=True)
-                phones_in_text = re.findall(
-                    r"(?:0|\+213)\s?[567]\d{1}\s?\d{2}\s?\d{2}\s?\d{2}", txt
-                )
-                for p in phones_in_text:
-                    clean = re.sub(r"\D", "", p)
-                    if len(clean) >= 9 and clean not in seen_phones:
-                        seen_phones.add(clean)
-                        contact["phones"].append(clean)
+    # 2. Profile link (build from user ID in raw HTML / JSON).
+    user_id = None
+    id_patterns = [
+        r'"userId"\s*:\s*"?(\d+)"?',
+        r'"user"\s*:\s*\{[^}]*?"id"\s*:\s*(\d+)',
+        r'store\.user\.id\s*=\s*(\d+)',
+        r'https://www\.ouedkniss\.com/membre/(\d+)',
+        r'"@id":\s*"https://www\.ouedkniss\.com/membre/(\d+)"',
+    ]
+    for pattern in id_patterns:
+        match = re.search(pattern, html)
+        if match:
+            user_id = match.group(1)
+            break
+    if user_id:
+        contact["profile_link"] = (
+            f"https://www.ouedkniss.com/membre/{user_id}"
+        )
 
-            # 5. Social links (WhatsApp / Telegram / Viber).
-            for a in soup.select('a[href*="wa.me"], a[href*="whatsapp.com"]'):
-                href = a.get("href", "")
-                match = re.search(r"wa\.me/(\+?\d+)", href)
-                if match:
-                    clean_link = f"https://wa.me/{match.group(1)}"
-                    if clean_link not in contact["whatsapp"]:
-                        contact["whatsapp"].append(clean_link)
+    # 3. Emails.
+    for a in soup.select('a[href^="mailto:"]'):
+        email = a["href"].replace("mailto:", "").strip().lower()
+        if email and email not in contact["email"]:
+            contact["email"].append(email)
 
-            for a in soup.select('a[href*="t.me"]'):
-                href = a.get("href", "")
-                match = re.search(r"t\.me/(\+?\d+)", href)
-                if match:
-                    clean_link = f"https://t.me/{match.group(1)}"
-                    if clean_link not in contact["telegram"]:
-                        contact["telegram"].append(clean_link)
+    # 4. Phones (links + visible text).
+    seen_phones = set()
+    for a in soup.select('a[href^="tel:"]'):
+        phone = re.sub(r"\D", "", a["href"])
+        if len(phone) >= 9 and phone not in seen_phones:
+            seen_phones.add(phone)
+            contact["phones"].append(phone)
 
-            for a in soup.select('a[href^="viber://"]'):
-                href = a.get("href", "").strip()
-                if href and href not in contact["viber"]:
-                    contact["viber"].append(href)
+    for btn in soup.select(
+        "#announcementUserInfo a.v-btn, #announcementUserInfo a.ok-list-item"
+    ):
+        txt = btn.get_text(strip=True)
+        phones_in_text = re.findall(
+            r"(?:0|\+213)\s?[567]\d{1}\s?\d{2}\s?\d{2}\s?\d{2}", txt
+        )
+        for p in phones_in_text:
+            clean = re.sub(r"\D", "", p)
+            if len(clean) >= 9 and clean not in seen_phones:
+                seen_phones.add(clean)
+                contact["phones"].append(clean)
 
-            # 6. Fallback phones from social links if necessary.
-            if not contact["phones"]:
-                for link in (
-                    contact["whatsapp"] + contact["telegram"] + contact["viber"]
-                ):
-                    nums = re.findall(r"(\+?\d{9,15})", link)
-                    for n in nums:
-                        cleaned = re.sub(r"\D", "", n)
-                        if len(cleaned) >= 9 and cleaned not in seen_phones:
-                            seen_phones.add(cleaned)
-                            contact["phones"].append(cleaned)
+    # 5. Social links (WhatsApp / Telegram / Viber).
+    for a in soup.select('a[href*="wa.me"], a[href*="whatsapp.com"]'):
+        href = a.get("href", "")
+        match = re.search(r"wa\.me/(\+?\d+)", href)
+        if match:
+            clean_link = f"https://wa.me/{match.group(1)}"
+            if clean_link not in contact["whatsapp"]:
+                contact["whatsapp"].append(clean_link)
 
-            # Clean up empty lists.
-            for k in ["email", "phones", "whatsapp", "telegram", "viber"]:
-                if not contact[k]:
-                    contact[k] = []
+    for a in soup.select('a[href*="t.me"]'):
+        href = a.get("href", "")
+        match = re.search(r"t\.me/(\+?\d+)", href)
+        if match:
+            clean_link = f"https://t.me/{match.group(1)}"
+            if clean_link not in contact["telegram"]:
+                contact["telegram"].append(clean_link)
 
-            now_iso = datetime.now().isoformat()
+    for a in soup.select('a[href^="viber://"]'):
+        href = a.get("href", "").strip()
+        if href and href not in contact["viber"]:
+            contact["viber"].append(href)
 
-            property_data = {
-                "titre": title,
-                "url": target_url,
-                # Versioning: unique document/version id based on URL and crawl date.
-                # This is stored as a field; Elasticsearch will still use its own _id.
-                "id": f"{target_url}|{now_iso}",
-                "site_origine": "Ouedkniss.com",
-                "categorie": "immobilier",
-                "category": "immobilier",
-                "date_crawl": now_iso,
-                "prix": f"{price_value} {price_unit}"
-                if price_value and price_unit
-                else "",
-                "prix_unit": "DA",
-                "prix_value": price_value or "",
-                "prix_dec": price_dec if price_value else "",
-                "description": description,
-                "bien": final_bien,
-                "numero": extract_text_or_default(
-                    soup,
-                    "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Numéro') + div",
-                ),
-                "date_depot": parse_date(
-                    extract_text_or_default(
-                        soup,
-                        "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Date') + div",
-                    )
-                ),
-                "nombre_vues": extract_text_or_default(
-                    soup,
-                    "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Vues') + div",
-                ),
-                "nb_pieces": normalize_pieces(
-                    extract_text_or_default(
-                        soup,
-                        "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Pièces') + div",
-                    )
-                ),
-                "superficie": extract_text_or_default(
-                    soup,
-                    "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Superficie') + div span",
-                ).split(" ")[0]
-                if extract_text_or_default(
-                    soup,
-                    "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Superficie') + div span",
-                )
-                != ""
-                else "",
-                "superficie_unit": extract_text_or_default(
-                    soup,
-                    "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Superficie') + div span",
-                ).split(" ")[-1]
-                if extract_text_or_default(
-                    soup,
-                    "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Superficie') + div span",
-                )
-                != ""
-                else "",
-                "papiers": [
-                    chip.get_text(strip=True)
-                    for chip in soup.select(
-                        "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Papiers') + div .v-chip__content"
-                    )
-                ],
-                "specifications": [
-                    chip.get_text(strip=True)
-                    for chip in soup.select(
-                        "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Spécifications') + div .v-chip__content"
-                    )
-                ],
-                "images": images,
-                "etage": extract_text_or_default(
-                    soup,
-                    "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Etage') + div",
-                )
-                or extract_text_or_default(
-                    soup,
-                    "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('étage') + div",
-                ),
-                "transaction": final_transaction,
-                "payment": [
-                    chip.get_text(strip=True)
-                    for chip in soup.select(
-                        "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Conditions de paiement') + div .v-chip__content"
-                    )
-                ]
-                + [
-                    span.get_text(strip=True)
-                    for span in soup.select(
-                        "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Type de vente') + div span"
-                    )
-                ],
-                "adresse": address or "",
-                "wilaya": wilaya.strip() if wilaya else "",
-                "commune": commune.strip() if commune else "",
-                "status": "200",
-                "contact": contact,
-                "as_photo": as_photo,
-                "date_verif": now_iso,
-                "as_prix": "Avec prix" if price_value else "Sans prix",
-            }
+    # 6. Fallback phones from social links if necessary.
+    if not contact["phones"]:
+        for link in (
+            contact["whatsapp"] + contact["telegram"] + contact["viber"]
+        ):
+            nums = re.findall(r"(\+?\d{9,15})", link)
+            for n in nums:
+                cleaned = re.sub(r"\D", "", n)
+                if len(cleaned) >= 9 and cleaned not in seen_phones:
+                    seen_phones.add(cleaned)
+                    contact["phones"].append(cleaned)
 
-            if not is_essential_data_empty(property_data):
-                print(
-                    f"[DETAIL][{zone_name}] Successfully parsed listing → "
-                    f"{property_data['titre'][:80]!r}"
-                )
-                # Optional local debug saves (JSONL + pretty JSON) in `junk_test/`.
-                # Toggle with DEBUG_SAVE_LOCAL at the top of this file.
-                if DEBUG_SAVE_LOCAL:
-                    save_to_json(property_data)
-                    if ImmobilierUtils is not None:
-                        try:
-                            ImmobilierUtils.save_listing_file(property_data)
-                        except Exception as e:
-                            print(f"[DETAIL][{zone_name}] Failed to save listing file: {e}")
+    # Clean up empty lists.
+    for k in ["email", "phones", "whatsapp", "telegram", "viber"]:
+        if not contact[k]:
+            contact[k] = []
 
-                # Send to Elasticsearch immediately.
+    now_iso = datetime.now().isoformat()
+
+    property_data = {
+        "titre": title,
+        "url": target_url,
+        # Versioning: unique document/version id based on URL and crawl date.
+        # This is stored as a field; Elasticsearch will still use its own _id.
+        "id": f"{target_url}|{now_iso}",
+        "site_origine": "Ouedkniss.com",
+        "categorie": "immobilier",
+        "category": "immobilier",
+        "date_crawl": now_iso,
+        "prix": f"{price_value} {price_unit}"
+        if price_value and price_unit
+        else "",
+        "prix_unit": "DA",
+        "prix_value": price_value or "",
+        "prix_dec": price_dec if price_value else "",
+        "description": description,
+        "bien": final_bien,
+        "numero": extract_text_or_default(
+            soup,
+            "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Numéro') + div",
+        ),
+        "date_depot": parse_date(
+            extract_text_or_default(
+                soup,
+                "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Date') + div",
+            )
+        ),
+        "nombre_vues": extract_text_or_default(
+            soup,
+            "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Vues') + div",
+        ),
+        "nb_pieces": normalize_pieces(
+            extract_text_or_default(
+                soup,
+                "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Pièces') + div",
+            )
+        ),
+        "superficie": extract_text_or_default(
+            soup,
+            "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Superficie') + div span",
+        ).split(" ")[0]
+        if extract_text_or_default(
+            soup,
+            "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Superficie') + div span",
+        )
+        != ""
+        else "",
+        "superficie_unit": extract_text_or_default(
+            soup,
+            "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Superficie') + div span",
+        ).split(" ")[-1]
+        if extract_text_or_default(
+            soup,
+            "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Superficie') + div span",
+        )
+        != ""
+        else "",
+        "papiers": [
+            chip.get_text(strip=True)
+            for chip in soup.select(
+                "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Papiers') + div .v-chip__content"
+            )
+        ],
+        "specifications": [
+            chip.get_text(strip=True)
+            for chip in soup.select(
+                "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Spécifications') + div .v-chip__content"
+            )
+        ],
+        "images": images,
+        "etage": extract_text_or_default(
+            soup,
+            "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Etage') + div",
+        )
+        or extract_text_or_default(
+            soup,
+            "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('étage') + div",
+        ),
+        "transaction": final_transaction,
+        "payment": [
+            chip.get_text(strip=True)
+            for chip in soup.select(
+                "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Conditions de paiement') + div .v-chip__content"
+            )
+        ]
+        + [
+            span.get_text(strip=True)
+            for span in soup.select(
+                "div.v-col-sm-3.v-col-5.spec-name:-soup-contains('Type de vente') + div span"
+            )
+        ],
+        "adresse": address or "",
+        "wilaya": wilaya.strip() if wilaya else "",
+        "commune": commune.strip() if commune else "",
+        "status": "200",
+        "contact": contact,
+        "as_photo": as_photo,
+        "date_verif": now_iso,
+        "as_prix": "Avec prix" if price_value else "Sans prix",
+    }
+
+    if not is_essential_data_empty(property_data):
+        print(
+            f"[DETAIL][{zone_name}] Successfully parsed listing → "
+            f"{property_data['titre'][:80]!r}"
+        )
+        # Optional local debug saves (JSONL + pretty JSON) in `junk_test/`.
+        # Toggle with DEBUG_SAVE_LOCAL at the top of this file.
+        if DEBUG_SAVE_LOCAL:
+            save_to_json(property_data)
+            if ImmobilierUtils is not None:
                 try:
-                    # Interface aligned with documentation: insert_data_to_es(data, index)
-                    insert_data_to_es(property_data, index="immobilier")
-                    print(
-                        f"[DETAIL][{zone_name}] [ES] Inserted → "
-                        f"{property_data['titre'][:80]!r}"
-                    )
+                    ImmobilierUtils.save_listing_file(property_data)
                 except Exception as e:
-                    print(
-                        f"[DETAIL][{zone_name}] [ES] Failed to insert document: {e}"
-                    )
+                    print(f"[DETAIL][{zone_name}] Failed to save listing file: {e}")
+
+        # Send to Elasticsearch immediately.
+        try:
+            # Interface aligned with documentation: insert_data_to_es(data, index)
+            insert_data_to_es(property_data, index="immobilier")
+            print(
+                f"[DETAIL][{zone_name}] [ES] Inserted → "
+                f"{property_data['titre'][:80]!r}"
+            )
+        except Exception as e:
+            print(
+                f"[DETAIL][{zone_name}] [ES] Failed to insert document: {e}"
+            )
 
                 return  # Success – stop retry loop.
 

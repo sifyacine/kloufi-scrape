@@ -22,103 +22,224 @@ import asyncio
 import json
 import os
 import re
+import random
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Set, Tuple
 
-from crawl4ai import AsyncWebCrawler, BrowserConfig, CrawlerRunConfig
+from playwright.async_api import async_playwright
+try:
+    from playwright_stealth import Stealth
+except ImportError:
+    Stealth = None
 
+from scraper.utils.human_behavior import (
+    human_delay, human_scroll, human_mouse_move, 
+    simulate_reading, random_mistake, hover_random_elements, random_navigation
+)
+from scraper.proxy.proxy_manager import ProxyManager
 from scrape_details import scrape_single_url
 
 # ========================= GLOBAL CONFIG =========================
 
 PROXY_URL = "https://proxyium.com/"
 
-# Base listing URL for immobilier category. You can later extend this
-# to include transaction / property filters (vente, location, etc.).
+# Base listing URL for immobilier category.
 TARGET_URL_BASE = "https://www.ouedkniss.com/immobilier/"
 
-# Where we persist the deduplication cache of already-scraped listing IDs.
+# Where we persist the deduplication cache
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DEDUP_CACHE_PATH = os.path.join(BASE_DIR, "scraped_urls_cache.json")
 
 # How many listing pages to fetch in one batch per zone cycle.
-# Note: we keep this modest to avoid overloading Proxyium and Ouedkniss.
 LISTING_BATCH_SIZE = 5
-
 
 @dataclass
 class ZoneConfig:
     """Static configuration for a single scraping zone."""
-
     name: str                 # human readable name (e.g. "HOT")
     internal_name: str        # internal tag (e.g. "REALTIME")
     start_page: int           # first listing page to consider
     end_page: Optional[int]   # last page (None = "until empty")
     interval_seconds: int     # delay between runs in continuous mode
-    detail_workers: int       # concurrent detail scrapers for this zone
-    listing_concurrency: int  # concurrent listing pages per batch
+    detail_workers: int       # concurrent detail scrapers for this zone (unused in behavioral)
+    listing_concurrency: int  # (unused in behavioral)
     max_retries: int          # max retries per detail URL
     retry_delay: float        # delay between retries (seconds)
     throttle_delay: float     # delay between detail requests
 
-
-# Default zone configuration tuned according to the documentation.
+# Default zone configuration tuned for behavioral scraping.
 ZONES: Dict[str, ZoneConfig] = {
-    # 🔥 HOT / REALTIME zone: focus on the very first pages, very frequent.
+    # 🔥 HOT / REALTIME zone: focus on the first page, very frequent.
     "hot": ZoneConfig(
         name="HOT",
         internal_name="REALTIME",
         start_page=1,
-        # HOT zone only watches the very first page to minimize load and
-        # maximize freshness; WARM/COLD cover the deep pages.
         end_page=1,
-        # Realtime monitoring: run every 60 seconds in continuous mode.
         interval_seconds=60,
-        detail_workers=5,
-        listing_concurrency=2,
+        detail_workers=1,
+        listing_concurrency=1,
         max_retries=2,
         retry_delay=1.0,
-        throttle_delay=0.05,
+        throttle_delay=5.0,
     ),
     # 🌤 WARM zone: full crawl, moderate pace.
     "warm": ZoneConfig(
         name="WARM",
         internal_name="WARM",
         start_page=1,
-        end_page=None,          # full crawl
-        interval_seconds=7200,  # every 2 hours
-        detail_workers=10,
-        # Keep listing concurrency low to reduce pressure on Proxyium.
+        end_page=None,
+        interval_seconds=7200,
+        detail_workers=1,
         listing_concurrency=1,
         max_retries=3,
         retry_delay=3.0,
-        throttle_delay=0.2,
+        throttle_delay=10.0,
     ),
     # ❄ COLD zone: full backfill, slow and patient.
     "cold": ZoneConfig(
         name="COLD",
         internal_name="COLD",
         start_page=1,
-        end_page=None,           # full crawl
-        interval_seconds=604800, # once per week
-        detail_workers=5,
-        # Slow, deep backfill – very gentle on Proxyium.
+        end_page=None,
+        interval_seconds=604800,
+        detail_workers=1,
         listing_concurrency=1,
         max_retries=5,
         retry_delay=5.0,
-        throttle_delay=0.5,
+        throttle_delay=20.0,
     ),
 }
 
+class BehavioralBrowsingSession:
+    """Encapsulates a human-like browsing session for a specific zone run."""
+    def __init__(self, zone: ZoneConfig, global_seen_ids: Set[str]):
+        self.zone = zone
+        self.global_seen_ids = global_seen_ids
+        self.new_ads_scraped = 0
+        self.max_ads_per_session = 15 if zone.name == "HOT" else 30
 
-# Global browser config shared by all listing scrapers.
-browser_config = BrowserConfig(
-    headless=True,
-    text_mode=False,
-    browser_type="chromium",
-    java_script_enabled=True,
-)
+    async def run(self):
+        print(f"\n  [{self.zone.name}] Starting Behavioral Browsing Session...")
+        
+        async with async_playwright() as p:
+            browser_args = ["--disable-blink-features=AutomationControlled", "--no-sandbox"]
+            browser = await p.chromium.launch(headless=True, args=browser_args)
+            
+            # Use stealth if available
+            if Stealth:
+                context = await Stealth().use_async(browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                    viewport={"width": 1920, "height": 1080}
+                ))
+            else:
+                context = await browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+                    viewport={"width": 1920, "height": 1080}
+                )
+            
+            page = await context.new_page()
+            
+            try:
+                # 1. Navigate via Proxyium
+                target_url = TARGET_URL_BASE if self.zone.start_page == 1 else f"{TARGET_URL_BASE}{self.zone.start_page}"
+                print(f"  [{self.zone.name}] Navigating to {target_url} via Proxyium...")
+                
+                await page.goto(PROXY_URL, wait_until='domcontentloaded')
+                await page.fill('#unique-form-control', f"{target_url}{'&' if '?' in target_url else '?'}lang=fr")
+                await page.press('#unique-form-control', 'Enter')
+                
+                # Wait for Proxyium to load the actual site
+                await asyncio.sleep(8)
+                
+                ads_in_this_session = 0
+                while ads_in_this_session < self.max_ads_per_session:
+                    # Random behavior: Scroll and look around
+                    await human_scroll(page, max_scrolls=random.randint(1, 4))
+                    
+                    # Occasionally hover over some cards
+                    if random.random() < 0.6:
+                        await hover_random_elements(page, 'a.o-announ-card-content')
+
+                    # Extract visible cards
+                    cards = await page.locator('a.o-announ-card-content').all()
+                    if not cards:
+                        # Maybe we need to scroll more or we've reached the end
+                        if await page.locator('text=Aucune annonce trouvée').is_visible():
+                            print(f"  [{self.zone.name}] No more ads found on this page.")
+                            break
+                        await human_scroll(page, 3)
+                        continue
+
+                    # Find an interesting NEW ad
+                    eligible_cards = []
+                    for card in cards:
+                        href = await card.get_attribute('href')
+                        if href:
+                            # In Proxyium, the href might be proxied or relative
+                            # We need to extract the listing ID to check dedup
+                            listing_id = extract_listing_id_from_url(href)
+                            if listing_id and listing_id not in self.global_seen_ids:
+                                eligible_cards.append((card, href, listing_id))
+                    
+                    if not eligible_cards:
+                        print(f"  [{self.zone.name}] All visible ads are already scraped. Navigating forward...")
+                        # Try to find 'Next' button or use random navigation
+                        if not await random_navigation(page):
+                           # Manual page increment if stuck? For now just break session or scroll
+                           await human_scroll(page, 5)
+                           # If still nothing, move on
+                           break
+                        continue
+
+                    # Pick an ad
+                    target_card, target_href, target_id = random.choice(eligible_cards[:5])
+                    
+                    print(f"  [{self.zone.name}] [Human] Interesting ad found: {target_id}")
+                    await target_card.scroll_into_view_if_needed()
+                    await human_delay(1, 2)
+                    await target_card.click()
+                    
+                    # Now on detail page (inside Proxyium)
+                    await simulate_reading(page, random.randint(4, 9))
+                    
+                    # Use the refactored detail scraper
+                    # We need the real URL for ID extraction or just pass the ID if we had it
+                    # But scrape_single_url wants a target_url. 
+                    # Inside Proxyium, the address bar is still proxyium.com
+                    # We'll construct a mock URL or use the extracted one
+                    real_ad_url = f"https://www.ouedkniss.com{target_href}" if target_href.startswith('/') else target_href
+                    
+                    await scrape_single_url(
+                        real_ad_url,
+                        zone_name=self.zone.name,
+                        page=page
+                    )
+                    
+                    self.global_seen_ids.add(target_id)
+                    self.new_ads_scraped += 1
+                    ads_in_this_session += 1
+                    
+                    # Go back
+                    if random.random() < 0.9:
+                        print(f"  [{self.zone.name}] [Human] Done reading. Going back...")
+                        await page.go_back(wait_until='domcontentloaded')
+                        await human_delay(2, 5)
+                    else:
+                        print(f"  [{self.zone.name}] [Human] Let's look at something else here...")
+                        await random_navigation(page)
+
+                    # Distraction break
+                    if random.random() < 0.15:
+                        await human_delay(15, 40)
+
+            except Exception as e:
+                print(f"  [{self.zone.name}] Session Error: {e}")
+            finally:
+                await browser.close()
+                print(f"  [{self.zone.name}] Session closed. Scraped {self.new_ads_scraped} new ads.")
+
+        return self.new_ads_scraped
 
 
 # ========================= DEDUPLICATION =========================
@@ -178,227 +299,13 @@ def save_scraped_ids(ids: Set[str]) -> None:
 
 # ========================= LISTING SCRAPING =========================
 
-async def scrape_listing_page(page_number: int) -> List[str]:
-    """
-    Scrape a single listing page via Proxyium and extract detail URLs.
-
-    Returns a list of absolute detail URLs or an empty list on failure.
-    """
-    target_url = f"{TARGET_URL_BASE}{page_number}" if page_number > 1 else f"{TARGET_URL_BASE}"
-
-    js_commands = [
-        # Give Proxyium a bit of time to fully load (kept modest to avoid
-        # long sessions while still being reliable).
-        "await new Promise(resolve => setTimeout(resolve, 5000));",
-        "localStorage.setItem('ok-auth-frame', JSON.stringify({ locale: 'fr' }));",
-        "document.cookie = 'ok-locale=fr; path=/; domain=.ouedkniss.com';",
-        "document.querySelector('button.fc-button.fc-cta-consent.fc-primary-button')?.click();",
-        # Inject the real Ouedkniss URL into Proxyium form.
-        f"document.getElementById('unique-form-control').value = '{target_url}{'&' if '?' in target_url else '?'}lang=fr';",
-        "document.querySelector('#web_proxy_form').submit();",
-        # Allow proxied page to render most content.
-        "await new Promise(resolve => setTimeout(resolve, 3000));",
-        "document.querySelector('button.fc-button.fc-cta-consent.fc-primary-button')?.click();",
-    ]
-
-    config = CrawlerRunConfig(
-        js_code=js_commands,
-        # Shorter delay/timeout so we don't keep Proxyium sessions open
-        # longer than necessary.
-        delay_before_return_html=15,
-        page_timeout=90_000,
-        wait_until="domcontentloaded",
-    )
-
-    async with AsyncWebCrawler(config=browser_config) as crawler:
-        result = await crawler.arun(url=PROXY_URL, config=config)
-
-    if not result or not result.success:
-        print(f"[LISTING] Page {page_number}: crawl failed via Proxyium.")
-        return []
-
-    # Extract the JSON-LD block that contains "itemListElement".
-    matches = re.findall(r'"itemListElement":(\[.*?\])', result.html, re.DOTALL)
-    if len(matches) < 2:
-        print(f"[LISTING] Page {page_number}: no JSON-LD itemListElement found.")
-        return []
-
-    try:
-        data = json.loads(matches[1])
-    except Exception as e:
-        print(f"[LISTING] Page {page_number}: failed to parse JSON-LD → {e}")
-        return []
-
-    urls: List[str] = []
-    seen: Set[str] = set()
-    for item in data:
-        url = item.get("url")
-        if url and url.startswith("http") and url not in seen:
-            seen.add(url)
-            urls.append(url)
-
-    print(f"[LISTING] Page {page_number}: extracted {len(urls)} raw URLs.")
-    return urls
-
-
-async def listing_producer_for_zone(
-    zone: ZoneConfig,
-    url_queue: asyncio.Queue,
-    global_seen_ids: Set[str],
-) -> int:
-    """
-    Producer for a specific zone.
-
-    - Iterates over listing pages according to zone's page range.
-    - Fetches pages in small batches with limited concurrency.
-    - Applies global deduplication before enqueuing URLs.
-
-    Returns the number of NEW unique listing IDs that were queued.
-    """
-    pages_processed = 0
-    new_ids_count = 0
-
-    current_page = zone.start_page
-    batch_index = 0
-
-    while True:
-        # Stop if we reached the configured end_page (for HOT zone).
-        if zone.end_page is not None and current_page > zone.end_page:
-            break
-
-        batch_pages: List[int] = []
-        for _ in range(LISTING_BATCH_SIZE):
-            if zone.end_page is not None and current_page > zone.end_page:
-                break
-            batch_pages.append(current_page)
-            current_page += 1
-
-        if not batch_pages:
-            break
-
-        batch_index += 1
-        print(
-            f"[{zone.name}] Listing batch #{batch_index} → pages "
-            f"{batch_pages[0]} to {batch_pages[-1]}"
-        )
-
-        sem = asyncio.Semaphore(zone.listing_concurrency)
-
-        async def _run_single(page_no: int) -> Tuple[int, List[str]]:
-            async with sem:
-                urls = await scrape_listing_page(page_no)
-                return page_no, urls
-
-        tasks = [asyncio.create_task(_run_single(p)) for p in batch_pages]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-
-        batch_new_ids = 0
-        empty_pages_in_batch = 0
-
-        for res in results:
-            if isinstance(res, Exception):
-                print(f"[{zone.name}] Error while scraping listing page: {res}")
-                continue
-
-            page_no, urls = res
-            pages_processed += 1
-
-            if not urls:
-                empty_pages_in_batch += 1
-                continue
-
-            for url in urls:
-                listing_id = extract_listing_id_from_url(url)
-                if not listing_id:
-                    # If we cannot extract an ID, we still process it but we log it.
-                    print(f"[{zone.name}] WARNING: Could not extract ID from URL → {url}")
-                    await url_queue.put(url)
-                    continue
-
-                is_hot_zone = zone.name == "HOT"
-
-                # For WARM/COLD we skip already-seen IDs (global dedup).
-                # For HOT we *do not* skip: we always enqueue the URL so that
-                # realtime monitoring never misses a listing, even if it was
-                # already seen previously. We still record the ID so WARM/COLD
-                # runs can skip redundant work.
-                if listing_id in global_seen_ids:
-                    if is_hot_zone:
-                        await url_queue.put(url)
-                    continue
-
-                global_seen_ids.add(listing_id)
-                batch_new_ids += 1
-                new_ids_count += 1
-                await url_queue.put(url)
-
-        print(
-            f"[{zone.name}] Batch #{batch_index}: "
-            f"{batch_new_ids} NEW IDs queued "
-            f"(dedup size: {len(global_seen_ids)}, queue size: {url_queue.qsize()})"
-        )
-
-        # Heuristic: if every page in this batch returned zero URLs,
-        # we assume we reached the end of available listings.
-        if empty_pages_in_batch == len(batch_pages):
-            print(f"[{zone.name}] Reached empty pages → stopping listing producer.")
-            break
-
-    print(
-        f"[{zone.name}] Listing producer finished. "
-        f"Pages processed: {pages_processed}, new IDs: {new_ids_count}"
-    )
-    return new_ids_count
-
-
-# ========================= DETAIL WORKERS =========================
-
-async def detail_worker_for_zone(
-    zone: ZoneConfig,
-    worker_id: int,
-    url_queue: asyncio.Queue,
-):
-    """
-    Worker that pulls URLs from a queue and delegates to `scrape_single_url`.
-    """
-    print(f"[{zone.name}] Detail Worker #{worker_id} started.")
-
-    while True:
-        url = await url_queue.get()
-        if url is None:
-            # Shutdown signal for this worker.
-            print(f"[{zone.name}] Detail Worker #{worker_id} shutting down.")
-            url_queue.task_done()
-            break
-
-        print(f"[{zone.name}] Worker #{worker_id} → {url}")
-
-        try:
-            # Zone-specific retry strategy is passed down to the detail scraper.
-            await scrape_single_url(
-                url,
-                max_retries=zone.max_retries,
-                retry_delay=zone.retry_delay,
-                zone_name=zone.name,
-            )
-            print(f"[{zone.name}] Worker #{worker_id} successfully scraped.")
-        except Exception as e:
-            print(f"[{zone.name}] Worker #{worker_id} FAILED {url} → {e}")
-        finally:
-            url_queue.task_done()
-            # Throttle between detail pages to avoid hammering Proxyium / Ouedkniss.
-            await asyncio.sleep(zone.throttle_delay)
-
-
-# ========================= ZONE RUNNER =========================
-
 async def run_zone(
     zone_key: str,
     global_seen_ids: Set[str],
     continuous: bool,
 ) -> None:
     """
-    Execute a single zone either once (single-pass) or forever (continuous).
+    Execute a single zone using a human-like behavioral session.
     """
     zone = ZONES[zone_key]
     run_index = 0
@@ -411,41 +318,22 @@ async def run_zone(
             f"at {run_started_at.isoformat()} =========="
         )
 
-        url_queue: asyncio.Queue = asyncio.Queue(maxsize=2000)
-
-        # Start detail workers for this zone.
-        workers = [
-            asyncio.create_task(detail_worker_for_zone(zone, i + 1, url_queue))
-            for i in range(zone.detail_workers)
-        ]
-
-        # Produce listing URLs for this zone.
-        new_ids = await listing_producer_for_zone(zone, url_queue, global_seen_ids)
-
-        # Wait until all queued URLs are processed.
-        await url_queue.join()
-
-        # Send shutdown signal to each worker.
-        for _ in range(zone.detail_workers):
-            await url_queue.put(None)
-
-        await asyncio.gather(*workers)
+        session = BehavioralBrowsingSession(zone, global_seen_ids)
+        new_ids = await session.run()
 
         run_ended_at = datetime.now()
         elapsed = (run_ended_at - run_started_at).total_seconds()
         print(
             f"========== [{zone.name}] RUN #{run_index} FINISHED "
-            f"in {elapsed:.1f}s (new IDs: {new_ids}) =========="
+            f"in {elapsed:.1f}s (new ads scraped: {new_ids}) =========="
         )
 
-        # Persist dedup cache after each run for safety.
+        # Persist dedup cache after each run
         save_scraped_ids(global_seen_ids)
 
         if not continuous:
-            # Single-pass mode → exit after one run.
             break
 
-        # Continuous mode → sleep until next scheduled run.
         sleep_for = max(zone.interval_seconds - elapsed, 0)
         print(f"[{zone.name}] Sleeping {sleep_for:.1f}s before next run...")
         await asyncio.sleep(sleep_for)
