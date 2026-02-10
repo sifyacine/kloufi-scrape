@@ -31,6 +31,17 @@ class DetailExtractor:
             
         except Exception as e:
             print(f"  [ERROR] Extracting {url}: {e}")
+            try:
+                # Save debug info
+                import time
+                ts = int(time.time())
+                await page.screenshot(path=f"debug_detail_fail_{ts}.png")
+                content = await page.content()
+                with open(f"debug_detail_fail_{ts}.html", "w", encoding="utf-8") as f:
+                    f.write(content)
+                print(f"  [DEBUG] Saved screenshot to debug_detail_fail_{ts}.png")
+            except:
+                pass
             return None
         finally:
             await page.close()

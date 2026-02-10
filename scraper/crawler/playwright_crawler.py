@@ -72,5 +72,16 @@ async def crawl_with_playwright(url, proxy=None, headless=True):
             return html, last_count
             
         except Exception as e:
+            print(f"  [ERROR] Crawl failed for {url}. Capturing debug info...")
+            try:
+                timestamp = asyncio.get_event_loop().time()
+                await page.screenshot(path=f"debug_crawl_fail_{int(timestamp)}.png")
+                content = await page.content()
+                with open(f"debug_crawl_fail_{int(timestamp)}.html", "w", encoding="utf-8") as f:
+                    f.write(content)
+                print(f"  [DEBUG] Saved screenshot and HTML to debug_crawl_fail_{int(timestamp)}.*")
+            except Exception as inner_e:
+                print(f"  [ERROR] Could not capture debug info: {inner_e}")
+            
             await browser.close()
             raise Exception(f"Playwright crawl failed: {e}")
