@@ -200,6 +200,13 @@ class BehavioralBrowsingSession:
                                 eligible_cards.append((card, href, listing_id))
                     
                     if not eligible_cards:
+                        # Check if we should move to next page or if we are at the end
+                        # For HOT zone, end_page is usually 1, so we should stay here.
+                        current_page_num = self.zone.start_page # Simplification
+                        if self.zone.end_page and current_page_num >= self.zone.end_page:
+                            print(f"  [{self.zone.name}] Reached end_page ({self.zone.end_page}). Session complete.")
+                            break
+
                         print(f"  [{self.zone.name}] All visible ads are already scraped. Navigating forward...")
                         if not await random_navigation(page):
                            await human_scroll(page, 5)
@@ -219,12 +226,12 @@ class BehavioralBrowsingSession:
                     
                     real_ad_url = f"https://www.ouedkniss.com{target_href}" if target_href.startswith('/') else target_href
                     
-                    # Call the detail scraper
+                    # Call the detail scraper (Proxyium Mode: don't pass 'page')
                     await scrape_single_url(
                         real_ad_url,
                         zone_name=self.zone.name,
-                        page=page,
-                        proxy_manager=self.proxy_manager # Pass it down
+                        # page=page, # REMOVED: triggers separate Proxyium run
+                        proxy_manager=self.proxy_manager
                     )
                     
                     self.global_seen_ids.add(target_id)

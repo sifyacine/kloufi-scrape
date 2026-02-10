@@ -6,6 +6,13 @@ import asyncio
 import re
 import random
 from typing import Dict, List, Optional, Set, Tuple, Any
+from bs4 import BeautifulSoup
+
+# Try to import crawl4ai for Proxyium-based scraping
+try:
+    from crawl4ai import AsyncWebCrawler, CrawlerRunConfig, CacheMode, BrowserConfig
+except ImportError:
+    AsyncWebCrawler = None
 
 # Ensure project root is on sys.path, then import the shared modules.
 # Script is in sites/immobilier/ouedkniss/, so root is 3 levels up.
@@ -240,76 +247,72 @@ async def scrape_single_url(
     """
     pass
 
-    # If a page is provided, we use it directly (Behavioral Session mode)
+    # If a page is provided, we can still use it (though user wants Proxyium for details)
     if page:
-        print(f"[DETAIL][{zone_name}] Behavioral mode: Scraping {target_url} using existing page.")
+        print(f"[DETAIL][{zone_name}] Manual Mode: Scraping {target_url} using existing context.")
         try:
+            # We don't use Proxyium here because we already have a page on Ouedkniss
             await simulate_reading(page, random.randint(3, 7))
-            await human_scroll(page, random.randint(1, 3))
-            
-            # Use the project's DetailExtractor for consistency
-            extractor = DetailExtractor(page)
-            data = await extractor.extract(target_url)
-            
-            if data:
-                print(f"[DETAIL][{zone_name}] Successfully extracted ad data: {target_url}")
-                # Save data (the project usually handles saving in main.py, 
-                # but ouedkniss module has its own _parse_and_save for backward compatibility)
-                content = await page.content()
-                await _parse_and_save(content, target_url, zone_name)
+            await human_scroll(page, random.randint(1, 4))
+            content = await page.content()
+            await _parse_and_save(content, target_url, zone_name)
             return
         except Exception as e:
-            print(f"  [ERROR] Behavioral detail scrape failed: {e}")
+            print(f"  [ERROR] Manual detail scrape failed: {e}")
             return
 
-    # Standalone mode: Create own browser and use proxies
-    print(f"[DETAIL][{zone_name}] Standalone mode: Scraping {target_url}")
+    # Proxyium Mode: Use crawl4ai or Playwright to navigate via Proxyium
+    print(f"[DETAIL][{zone_name}] Proxyium Mode: Scraping {target_url} via Proxyium")
     
-    playwright_cm = async_playwright()
-    if Stealth:
-        playwright_cm = Stealth().use_async(playwright_cm)
-        
-    async with playwright_cm as p:
-        browser_args = ["--disable-blink-features=AutomationControlled", "--no-sandbox"]
-        browser = await p.chromium.launch(headless=True, args=browser_args)
-        
-        # Select proxy
-        proxy = None
-        if proxy_manager:
-            proxy = proxy_manager.get_proxy("ouedkniss.com", rotate=True)
-        
-        context_options = {
-            "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-            "viewport": {"width": 1920, "height": 1080}
-        }
-        if proxy:
-            context_options["proxy"] = {"server": proxy}
-            print(f"  [{zone_name}] Using proxy: {proxy}")
-        
-        context = await browser.new_context(**context_options)
-        page = await context.new_page()
-        
+    # Proxyium URL where we "input" the target URL
+    proxyium_url = "https://proxyium.com/"
+    
+    # Navigation script for Proxyium
+    js_commands = [
+        f"await page.fill('input[name=\"url\"]', '{target_url}');",
+        "await page.click('button#btn-go');",
+        "await page.waitForNavigation({ waitUntil: 'networkidle' });",
+        # Locale handling inside Proxyium
+        "await page.evaluate(() => { localStorage.setItem('ok-auth-frame', JSON.stringify({ locale: 'fr' })); document.cookie = 'ok-locale=fr; path=/; domain=.ouedkniss.com'; });",
+        "await page.reload({ waitUntil: 'networkidle' });"
+    ]
+
+    for attempt in range(1, max_retries + 1):
         try:
-            await page.goto(f"{target_url}{'&' if '?' in target_url else '?'}lang=fr", wait_until='domcontentloaded')
-            
-            # Locale handling
-            await page.evaluate("""() => {
-                localStorage.setItem('ok-auth-frame', JSON.stringify({ locale: 'fr' }));
-                document.cookie = 'ok-locale=fr; path=/; domain=.ouedkniss.com';
-            }""")
-            
-            # Consent banner
-            try:
-                await page.locator('button.fc-button.fc-cta-consent.fc-primary-button').click(timeout=5000)
-            except: pass
-            
-            await simulate_reading(page, random.randint(5, 10))
-            await human_scroll(page, random.randint(2, 4))
-            
-            content = await page.content()
-        finally:
-            await browser.close()
-    return
+            if AsyncWebCrawler is not None:
+                # Use crawl4ai if available
+                async with AsyncWebCrawler() as crawler:
+                    result = await crawler.arun(
+                        url=proxyium_url,
+                        config=CrawlerRunConfig(
+                            cache_mode=CacheMode.BYPASS,
+                            js_code=js_commands,
+                            wait_for="div.v-card-text.__description", # Wait for a key element
+                        )
+                    )
+                    if result.success:
+                        await _parse_and_save(result.html, target_url, zone_name)
+                        return # Success
+            else:
+                # Fallback to pure Playwright via Proxyium
+                async with async_playwright() as p:
+                    browser = await p.chromium.launch(headless=True)
+                    context = await browser.new_context()
+                    page_obj = await context.new_page()
+                    await page_obj.goto(proxyium_url)
+                    await page_obj.fill('input[name="url"]', target_url)
+                    await page_obj.click('button#btn-go')
+                    await page_obj.wait_for_load_state('networkidle')
+                    content = await page_obj.content()
+                    await _parse_and_save(content, target_url, zone_name)
+                    await browser.close()
+                    return # Success
+        except Exception as e:
+            print(f"  [Attempt {attempt}] Proxyium scrape failed: {e}")
+            if attempt < max_retries:
+                await asyncio.sleep(retry_delay)
+                
+    print(f"[DETAIL][{zone_name}] FAILED to scrape {target_url} via Proxyium after {max_retries} attempts.")
 
 async def _parse_and_save(html: str, target_url: str, zone_name: str) -> None:
     """Helper to parse HTML and save to DB/JSON."""
