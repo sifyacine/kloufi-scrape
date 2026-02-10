@@ -39,38 +39,56 @@ async def crawl_listings():
         url = BASE_URL.format(page_num)
         print(f"Scraping Listing Page {page_num}/{START_PAGE + MAX_PAGES - 1}: {url}")
         
-        # Get a proxy
+    for page_num in range(START_PAGE, START_PAGE + MAX_PAGES):
+        url = BASE_URL.format(page_num)
+        print(f"Scraping Listing Page {page_num}/{START_PAGE + MAX_PAGES - 1}: {url}")
+        
         match = tldextract.extract(url)
         domain = match.domain + '.' + match.suffix
-        proxy = manager.get_proxy(domain)
         
-        try:
-            print(f"  Using proxy: {proxy}")
-            # Crawl with Playwright WITH PROXY
-            html, card_count = await crawl_with_playwright(url, proxy=proxy, headless=True)
+        # Retry loop for listing pages
+        max_retries = 5
+        success = False
+        
+        for attempt in range(max_retries):
+            # Get a fresh proxy (rotate if this isn't the first attempt)
+            if attempt > 0:
+                print(f"  [Retry {attempt}/{max_retries}] Rotating proxy due to failure...")
+                manager.rotate(domain)
+                
+            proxy = manager.get_proxy(domain)
             
-            print(f"  [OK] Cards detected: {card_count}")
-            
-            soup = BeautifulSoup(html, 'html.parser')
-            # Extract URLs
-            cards = soup.select('.o-announ-card-column a.o-announ-card-content')
-            
-            extracted_count = 0
-            for card in cards:
-                href = card.get('href')
-                if href:
-                    full_url = f"https://www.ouedkniss.com{href}" if href.startswith('/') else href
-                    all_found_urls.append(full_url)
-                    extracted_count += 1
-            
-            print(f"  [SUCCESS] Extracted {extracted_count} URLs")
-            
-        except Exception as e:
-            print(f"  [FAILED] {e}")
-            manager.rotate(domain) # Rotate if failed
-            import traceback
-            traceback.print_exc()
-            continue
+            try:
+                print(f"  Using proxy: {proxy}")
+                # Crawl with Playwright WITH PROXY
+                html, card_count = await crawl_with_playwright(url, proxy=proxy, headless=True)
+                
+                print(f"  [OK] Cards detected: {card_count}")
+                
+                soup = BeautifulSoup(html, 'html.parser')
+                # Extract URLs
+                cards = soup.select('.o-announ-card-column a.o-announ-card-content')
+                
+                extracted_count = 0
+                for card in cards:
+                    href = card.get('href')
+                    if href:
+                        full_url = f"https://www.ouedkniss.com{href}" if href.startswith('/') else href
+                        all_found_urls.append(full_url)
+                        extracted_count += 1
+                
+                print(f"  [SUCCESS] Extracted {extracted_count} URLs")
+                success = True
+                break # Move to next page
+                
+            except Exception as e:
+                print(f"  [FAILED] Attempt {attempt+1}: {e}")
+                import traceback
+                # traceback.print_exc() # Reduce noise
+                continue
+        
+        if not success:
+            print(f"[ERROR] Failed to scrape page {page_num} after {max_retries} attempts. Skipping.")
 
     # De-duplicate
     unique_urls = list(set(all_found_urls))
