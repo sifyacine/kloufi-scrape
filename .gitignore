@@ -64,3 +64,6 @@ dist/
 
 # Notes:
 # - Remove or adjust any ignore rules if you explicitly want files (e.g., data/*.json) to be tracked.
+
+
+crawled_urls.json
