@@ -10,7 +10,7 @@ PROXY_SOURCES = [] # Disabled for test
 # TEST CONFIGURATION
 # User requested specific proxy: proenas.synology.me
 # NOTE: Port 80 is assumed if not specified. Update if needed (e.g., :8080).
-TEST_PROXY = "http://proenas.synology.me" 
+TEST_PROXY = "http://proenas.synology.me:3128" 
 USE_TEST_PROXY_ONLY = True
 
 async def _fetch_raw_proxies():
