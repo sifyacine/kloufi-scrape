@@ -734,21 +734,6 @@ async def _parse_and_save(html: str, target_url: str, zone_name: str) -> None:
                 f"[DETAIL][{zone_name}] [ES] Failed to insert document: {e}"
             )
 
-                return  # Success – stop retry loop.
-
-        # If we reach here the attempt failed or parsing produced empty essential data.
-        if attempt < max_retries:
-            print(
-                f"[DETAIL][{zone_name}] Retrying in {retry_delay} seconds "
-                f"(attempt {attempt}/{max_retries})..."
-            )
-            await asyncio.sleep(retry_delay)
-
-    print(
-        f"[DETAIL][{zone_name}] FAILED to scrape {target_url} after "
-        f"{max_retries} attempts."
-    )
-
 
 # Manual test example (uncomment to debug a single URL):
 # asyncio.run(
