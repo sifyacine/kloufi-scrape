@@ -1,5 +1,10 @@
 import aiohttp
 import asyncio
+import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # PROXY_SOURCES = [
 #     "https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt",
@@ -10,8 +15,8 @@ PROXY_SOURCES = [] # Disabled for test
 # TEST CONFIGURATION
 # User requested specific proxy: proenas.synology.me
 # NOTE: Port 80 is assumed if not specified. Update if needed (e.g., :8080).
-TEST_PROXY = "http://proenas.synology.me:3128" 
-USE_TEST_PROXY_ONLY = True
+TEST_PROXY = os.getenv("TEST_PROXY", "http://proenas.synology.me:3128")
+USE_TEST_PROXY_ONLY = os.getenv("USE_TEST_PROXY_ONLY", "true").lower() == "true"
 
 async def _fetch_raw_proxies():
     if USE_TEST_PROXY_ONLY and TEST_PROXY:
