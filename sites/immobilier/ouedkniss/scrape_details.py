@@ -264,7 +264,12 @@ async def scrape_single_url(
 
     # Standalone mode: Create own browser and use proxies
     print(f"[DETAIL][{zone_name}] Standalone mode: Scraping {target_url}")
-    async with async_playwright() as p:
+    
+    playwright_cm = async_playwright()
+    if Stealth:
+        playwright_cm = Stealth().use_async(playwright_cm)
+        
+    async with playwright_cm as p:
         browser_args = ["--disable-blink-features=AutomationControlled", "--no-sandbox"]
         browser = await p.chromium.launch(headless=True, args=browser_args)
         
@@ -281,12 +286,7 @@ async def scrape_single_url(
             context_options["proxy"] = {"server": proxy}
             print(f"  [{zone_name}] Using proxy: {proxy}")
         
-        # Use stealth if available
-        if Stealth:
-            context = await Stealth().use_async(browser.new_context(**context_options))
-        else:
-            context = await browser.new_context(**context_options)
-        
+        context = await browser.new_context(**context_options)
         page = await context.new_page()
         
         try:

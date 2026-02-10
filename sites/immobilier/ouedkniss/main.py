@@ -119,17 +119,22 @@ ZONES: Dict[str, ZoneConfig] = {
 
 class BehavioralBrowsingSession:
     """Encapsulates a human-like browsing session for a specific zone run."""
-    def __init__(self, zone: ZoneConfig, global_seen_ids: Set[str], proxy_manager: ProxyManager):
+    def __init__(self, zone: ZoneConfig, global_seen_ids: Set[str], proxy_manager: ProxyManager, max_ads_override: Optional[int] = None):
         self.zone = zone
         self.global_seen_ids = global_seen_ids
         self.proxy_manager = proxy_manager
         self.new_ads_scraped = 0
-        self.max_ads_per_session = 15 if zone.name == "HOT" else 30
+        self.max_ads_per_session = max_ads_override or (15 if zone.name == "HOT" else 30)
 
     async def run(self):
         print(f"\n  [{self.zone.name}] Starting Behavioral Browsing Session...")
         
-        async with async_playwright() as p:
+        # Use stealth if available
+        playwright_cm = async_playwright()
+        if Stealth:
+            playwright_cm = Stealth().use_async(playwright_cm)
+            
+        async with playwright_cm as p:
             browser_args = ["--disable-blink-features=AutomationControlled", "--no-sandbox"]
             browser = await p.chromium.launch(headless=True, args=browser_args)
             
@@ -144,12 +149,7 @@ class BehavioralBrowsingSession:
                 context_options["proxy"] = {"server": proxy}
                 print(f"  [{self.zone.name}] Using proxy: {proxy}")
             
-            # Use stealth if available
-            if Stealth:
-                context = await Stealth().use_async(browser.new_context(**context_options))
-            else:
-                context = await browser.new_context(**context_options)
-            
+            context = await browser.new_context(**context_options)
             page = await context.new_page()
             
             try:
@@ -315,6 +315,7 @@ async def run_zone(
     global_seen_ids: Set[str],
     proxy_manager: ProxyManager,
     continuous: bool,
+    max_ads_override: Optional[int] = None
 ) -> None:
     """
     Execute a single zone using a human-like behavioral session.
@@ -330,7 +331,7 @@ async def run_zone(
             f"at {run_started_at.isoformat()} =========="
         )
 
-        session = BehavioralBrowsingSession(zone, global_seen_ids, proxy_manager)
+        session = BehavioralBrowsingSession(zone, global_seen_ids, proxy_manager, max_ads_override)
         new_ids = await session.run()
 
         run_ended_at = datetime.now()
@@ -355,7 +356,7 @@ async def run_zone(
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Hybrid Multi-Pass Scraper for Ouedkniss immobilier (Proxyium-based)."
+        description="Hybrid Multi-Pass Scraper for Ouedkniss immobilier (Behavioral Session mode)."
     )
     parser.add_argument(
         "--zone",
@@ -370,6 +371,21 @@ def parse_args() -> argparse.Namespace:
         "--continuous",
         action="store_true",
         help="Run zones in continuous mode according to their internal schedules.",
+    )
+    parser.add_argument(
+        "--start-page",
+        type=int,
+        help="Override the start page for the selected zone(s).",
+    )
+    parser.add_argument(
+        "--end-page",
+        type=int,
+        help="Override the end page for the selected zone(s).",
+    )
+    parser.add_argument(
+        "--max-ads",
+        type=int,
+        help="Override the maximum ads to scrape per session.",
     )
     return parser.parse_args()
 
@@ -404,6 +420,15 @@ async def async_main(args: argparse.Namespace) -> None:
     manager = ProxyManager(proxies)
 
     selected_zone_keys = resolve_zone_keys(args.zone)
+    
+    # Apply CLI overrides to selected zones
+    for key in selected_zone_keys:
+        zone = ZONES[key]
+        if args.start_page is not None:
+            zone.start_page = args.start_page
+        if args.end_page is not None:
+            zone.end_page = args.end_page
+            
     print("Zones selected :")
     for key in selected_zone_keys:
         z = ZONES[key]
@@ -421,7 +446,7 @@ async def async_main(args: argparse.Namespace) -> None:
 
     # Launch each selected zone as its own async task.
     zone_tasks = [
-        asyncio.create_task(run_zone(zone_key, global_seen_ids, manager, args.continuous))
+        asyncio.create_task(run_zone(zone_key, global_seen_ids, manager, args.continuous, args.max_ads))
         for zone_key in selected_zone_keys
     ]
 
