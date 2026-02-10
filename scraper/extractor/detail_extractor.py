@@ -35,11 +35,22 @@ class DetailExtractor:
                 # Save debug info
                 import time
                 ts = int(time.time())
-                await page.screenshot(path=f"debug_detail_fail_{ts}.png")
+                # await page.screenshot(path=f"debug_detail_fail_{ts}.png")
                 content = await page.content()
                 with open(f"debug_detail_fail_{ts}.html", "w", encoding="utf-8") as f:
                     f.write(content)
-                print(f"  [DEBUG] Saved screenshot to debug_detail_fail_{ts}.png")
+                
+                # VPS LOGGING
+                try:
+                    title = await page.title()
+                    print(f"  [DEBUG_LOG] Page Title: {title}")
+                except:
+                    print(f"  [DEBUG_LOG] Could not get page title.")
+                
+                print(f"  [DEBUG_LOG] HTML Length: {len(content)}")
+                if "Just a moment" in title or "Cloudflare" in content:
+                    print(f"  [DEBUG_LOG] BLOCK DETECTED: Cloudflare Challenge")
+                
             except:
                 pass
             return None

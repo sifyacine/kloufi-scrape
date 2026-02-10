@@ -75,11 +75,24 @@ async def crawl_with_playwright(url, proxy=None, headless=True):
             print(f"  [ERROR] Crawl failed for {url}. Capturing debug info...")
             try:
                 timestamp = asyncio.get_event_loop().time()
-                await page.screenshot(path=f"debug_crawl_fail_{int(timestamp)}.png")
+                # await page.screenshot(path=f"debug_crawl_fail_{int(timestamp)}.png")
                 content = await page.content()
                 with open(f"debug_crawl_fail_{int(timestamp)}.html", "w", encoding="utf-8") as f:
                     f.write(content)
-                print(f"  [DEBUG] Saved screenshot and HTML to debug_crawl_fail_{int(timestamp)}.*")
+                
+                # VPS LOGGING
+                try:
+                    title = await page.title()
+                    print(f"  [DEBUG_LOG] Page Title: {title}")
+                except:
+                    print(f"  [DEBUG_LOG] Could not get page title.")
+                
+                print(f"  [DEBUG_LOG] HTML Length: {len(content)}")
+                if "Just a moment" in title or "Cloudflare" in content:
+                    print(f"  [DEBUG_LOG] BLOCK DETECTED: Cloudflare Challenge")
+                elif "403 Forbidden" in content:
+                     print(f"  [DEBUG_LOG] BLOCK DETECTED: 403 Forbidden")
+                
             except Exception as inner_e:
                 print(f"  [ERROR] Could not capture debug info: {inner_e}")
             
