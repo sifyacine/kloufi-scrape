@@ -15,6 +15,7 @@ from scraper.proxy.proxy_sources import fetch_and_validate_proxies
 from scraper.proxy.proxy_manager import ProxyManager
 from scraper.crawler.playwright_crawler import crawl_with_playwright
 from scraper.extractor.detail_extractor import DetailExtractor
+from scraper.utils.human_behavior import human_delay, simulate_reading
 
 # Auto-install stealth if missing
 try:
@@ -92,9 +93,14 @@ async def crawl_listings():
                         all_found_urls.append(full_url)
                         extracted_count += 1
                 
-                print(f"  [SUCCESS] Extracted {extracted_count} URLs")
                 manager.report_success(proxy)
                 success = True
+                
+                # Human behavior: Pause after successfully scraping a list page
+                if page_num < START_PAGE + MAX_PAGES - 1:
+                    print(f"  [Human] Taking a break before next page...")
+                    await human_delay(5, 15)
+                
                 break # Move to next page
                 
             except Exception as e:
@@ -239,8 +245,9 @@ async def extract_details(urls):
                 json.dump(announcements, f, indent=4, ensure_ascii=False)
             print(f"Saved {len(announcements)} total announcements.")
             
-            # Small delay between chunks
-            await asyncio.sleep(2)
+            # Human behavior: Longer break between chunks to simulate session breaks
+            print(f"  [Human] Chunk complete. Distracted for a moment...")
+            await human_delay(10, 30)
 
         await browser.close()
 

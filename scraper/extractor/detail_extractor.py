@@ -1,5 +1,7 @@
 from playwright.async_api import Page
 import re
+import random
+from scraper.utils.human_behavior import human_delay, simulate_reading, human_scroll, human_mouse_move
 
 class DetailExtractor:
     """Extracts detailed information from a single Ouedkniss announcement page."""
@@ -20,6 +22,13 @@ class DetailExtractor:
             print(f"  Fetching details: {url}")
             await page.goto(url, wait_until='domcontentloaded', timeout=45000)
             
+            # Human behavior: Simulate reading the ad before extracting
+            print(f"  [Human] Reading advertisement...")
+            await simulate_reading(page, min_seconds=4)
+            
+            # Maybe scroll a bit to see the whole ad
+            if random.random() < 0.5:
+                await human_scroll(page, max_scrolls=2)
 
             data = await self._scrape_data(page)
             data['url'] = url

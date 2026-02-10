@@ -1,5 +1,7 @@
 from playwright.async_api import async_playwright
 import asyncio
+import random
+from scraper.utils.human_behavior import human_delay, human_scroll, human_mouse_move, simulate_reading, random_mistake
 
 async def crawl_with_playwright(url, proxy=None, headless=True):
     """
@@ -34,21 +36,22 @@ async def crawl_with_playwright(url, proxy=None, headless=True):
             await page.goto(url, wait_until='domcontentloaded', timeout=90000)
             
             # Initial wait for Vue.js to initialize
-            await asyncio.sleep(5)
-            print(f"  Page loaded, starting scroll...")
+            await simulate_reading(page, min_seconds=3)
+            print(f"  Page loaded, starting human-like scroll...")
             
-            # Scroll to load ALL lazy-loaded content
+            # Scroll to load ALL lazy-loaded content using human-like behavior
             last_count = 0
             stable_checks = 0
             scroll_attempt = 0
-            max_scrolls = 40  # Increased to ensure we get all content
+            max_attempts = 40
             
-            while scroll_attempt < max_scrolls and stable_checks < 3:
-                # Scroll down by viewport height
-                await page.evaluate('window.scrollBy(0, window.innerHeight)')
+            while scroll_attempt < max_attempts and stable_checks < 3:
+                # Perform human-like scroll
+                await human_scroll(page, max_scrolls=1)
                 
-                # Wait for lazy loading to trigger
-                await asyncio.sleep(2)
+                # Sometime move mouse idly
+                if random.random() < 0.3:
+                    await human_mouse_move(page)
                 
                 # Count announcement cards
                 count = await page.locator('.o-announ-card-column').count()
@@ -62,6 +65,11 @@ async def crawl_with_playwright(url, proxy=None, headless=True):
                 
                 last_count = count
                 scroll_attempt += 1
+                
+                # Random "thinking" pause
+                if random.random() < 0.1:
+                    print(f"  [Human] Pausing to focus on content...")
+                    await human_delay(2, 5)
             
             print(f"  [OK] Scrolling complete: {last_count} announcement cards loaded")
             
@@ -86,6 +94,10 @@ async def crawl_with_playwright(url, proxy=None, headless=True):
 
             # Get final HTML
             html = await page.content()
+            
+            # Behavioral imperfection: wait a bit before closing
+            await human_delay(1, 3)
+            await random_mistake(page)
             
             await browser.close()
             return html, last_count
