@@ -28,15 +28,26 @@ async def crawl_listings():
     print(f"PHASE 1: CRAWLING LISTING PAGES")
     print(f"{'='*60}")
     
+    # Initialize Proxy Manager
+    proxies = await fetch_proxies()
+    manager = ProxyManager(proxies)
+    print(f"Loaded {len(proxies)} proxies.")
+
     all_found_urls = []
     
     for page_num in range(START_PAGE, START_PAGE + MAX_PAGES):
         url = BASE_URL.format(page_num)
         print(f"Scraping Listing Page {page_num}/{START_PAGE + MAX_PAGES - 1}: {url}")
         
+        # Get a proxy
+        match = tldextract.extract(url)
+        domain = match.domain + '.' + match.suffix
+        proxy = manager.get_proxy(domain)
+        
         try:
-            # Crawl with Playwright (proxy disabled for stability)
-            html, card_count = await crawl_with_playwright(url, proxy=None, headless=True)
+            print(f"  Using proxy: {proxy}")
+            # Crawl with Playwright WITH PROXY
+            html, card_count = await crawl_with_playwright(url, proxy=proxy, headless=True)
             
             print(f"  [OK] Cards detected: {card_count}")
             
@@ -56,6 +67,7 @@ async def crawl_listings():
             
         except Exception as e:
             print(f"  [FAILED] {e}")
+            manager.rotate(domain) # Rotate if failed
             import traceback
             traceback.print_exc()
             continue
@@ -75,6 +87,10 @@ async def extract_details(urls):
     print(f"\n{'='*60}")
     print(f"PHASE 2: EXTRACTING DETAILS ({len(urls)} URLs)")
     print(f"{'='*60}")
+
+    # Initialize Proxy Manager
+    proxies = await fetch_proxies()
+    manager = ProxyManager(proxies)
 
     announcements = []
     
@@ -98,20 +114,42 @@ async def extract_details(urls):
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        )
-        
-        extractor = DetailExtractor(context)
         sem = asyncio.Semaphore(CONCURRENCY)
 
         async def process_url(url):
             async with sem:
-                data = await extractor.extract(url)
-                if data:
-                    announcements.append(data)
-                    # Incremental save (simple append to list)
-                return data
+                # Use a fresh context with a proxy for EACH request (or rotated)
+                domain = "ouedkniss.com"
+                proxy = manager.get_proxy(domain)
+                
+                context = None
+                try:
+                    context_options = {
+                        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+                    }
+                    if proxy:
+                        context_options["proxy"] = {"server": proxy}
+                        # print(f"  Using proxy for detail: {proxy}")
+
+                    context = await browser.new_context(**context_options)
+                    
+                    extractor = DetailExtractor(context)
+                    data = await extractor.extract(url)
+                    
+                    if data:
+                        announcements.append(data)
+                    else:
+                        # If failed, maybe rotate proxy?
+                        manager.rotate(domain)
+                    
+                    return data
+                except Exception as e:
+                    print(f"Error processing {url}: {e}")
+                    manager.rotate(domain)
+                    return None
+                finally:
+                    if context:
+                        await context.close()
 
         # Shuffle to distribute load
         random.shuffle(urls)
