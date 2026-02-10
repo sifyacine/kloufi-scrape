@@ -4,6 +4,15 @@ import os
 import json
 import asyncio
 import re
+import random
+from typing import Dict, List, Optional, Set, Tuple, Any
+
+# Ensure project root is on sys.path, then import the shared modules.
+# Script is in sites/immobilier/ouedkniss/, so root is 3 levels up.
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+if ROOT_DIR not in sys.path:
+    sys.path.insert(0, ROOT_DIR)
+
 from scraper.utils.human_behavior import human_delay, human_scroll, simulate_reading, human_mouse_move
 from scraper.proxy.proxy_manager import ProxyManager
 from scraper.extractor.detail_extractor import DetailExtractor
@@ -35,16 +44,8 @@ debugging easier for developers:
 DEBUG_SAVE_LOCAL = True
 
 try:
-    # Ensure project root is on sys.path, then import the shared insert2db module.
-    from pathlib import Path
-
-    ROOT_DIR = Path(__file__).resolve().parents[3]
-    if str(ROOT_DIR) not in sys.path:
-        sys.path.insert(0, str(ROOT_DIR))
-
     from insert2db.insert_scrape import insert_data_to_es
 except ImportError:
-
     def insert_data_to_es(data, index):
         print(f"[Mock] there is a problem in saving data '{index}'")
 
@@ -218,7 +219,7 @@ async def scrape_single_url(
     max_retries: int = 3,
     retry_delay: float = 5,
     zone_name: str = "UNKNOWN",
-    page: Optional[any] = None, # Allow passing an existing page
+    page: Optional[Any] = None, # Allow passing an existing page
     proxy_manager: Optional[ProxyManager] = None, # Allow passing a proxy manager
 ) -> None:
     """
@@ -237,13 +238,7 @@ async def scrape_single_url(
         Just for logging (e.g. "HOT", "WARM", "COLD") so you see which
         pipeline the request belongs to.
     """
-    proxy_url = "https://proxyium.com/"
-
-    browser_config = BrowserConfig(
-        headless=True,
-        text_mode=False,
-        browser_type="chromium",
-    )
+    pass
 
     # If a page is provided, we use it directly (Behavioral Session mode)
     if page:
