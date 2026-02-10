@@ -18,13 +18,13 @@ from scraper.extractor.detail_extractor import DetailExtractor
 
 # Auto-install stealth if missing
 try:
-    from playwright_stealth import stealth_async
+    from playwright_stealth import Stealth
 except ImportError:
     print("WARNING: playwright-stealth not installed. Attempting auto-install...")
     import subprocess
     try:
         subprocess.check_call([sys.executable, "-m", "pip", "install", "playwright-stealth"])
-        from playwright_stealth import stealth_async
+        from playwright_stealth import Stealth
         print("Successfully installed playwright-stealth.")
     except Exception as e:
         print(f"CRITICAL ERROR: Could not install playwright-stealth: {e}")
@@ -156,7 +156,8 @@ async def extract_details(urls):
         print("No new URLs to scrape.")
         return
 
-    async with async_playwright() as p:
+    # Use strict Stealth context manager as requested
+    async with Stealth().use_async(async_playwright()) as p:
         # STEALTH ARGS
         browser_args = [
             "--disable-blink-features=AutomationControlled",
@@ -188,8 +189,7 @@ async def extract_details(urls):
                         context = await browser.new_context(**context_options)
                         page = await context.new_page()
                         
-                        # Apply stealth
-                        await stealth_async(page)
+                        # Stealth is handled by the wrapper now
                         
                         print(f"[Attempt {attempt+1}/3] {url} (Proxy: {proxy})")
                         
