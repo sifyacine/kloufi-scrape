@@ -34,8 +34,8 @@ except ImportError:
 # Configuration
 BASE_URL = "https://www.ouedkniss.com/immobilier/{}"
 START_PAGE = 1
-MAX_PAGES = 5  # Scrape 5 pages
-CONCURRENCY = 3 # Number of concurrent detail extractions
+MAX_PAGES = 1  # Scrape 5 pages
+CONCURRENCY = 1 # Number of concurrent detail extractions
 
 async def crawl_listings():
     """Phase 1: Crawl listing pages to get announcement URLs."""
