@@ -20,8 +20,6 @@ class DetailExtractor:
             print(f"  Fetching details: {url}")
             await page.goto(url, wait_until='domcontentloaded', timeout=45000)
             
-            # Wait for title to ensure basic content is loaded
-                print(f"  [WARN] Title not found for {url}, attempting extraction anyway...")
 
             data = await self._scrape_data(page)
             data['url'] = url
